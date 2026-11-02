@@ -134,6 +134,29 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 			BUG_ON(1);
 #endif /* CONFIG_MALI_MTK_TRIGGER_KE */
 
+		/* xaga: the CSF firmware spins in the very same loop (it polls
+		 * GPU_IRQ_RAWSTAT bit17 CLEAN_CACHES_COMPLETED at MCU 0x40003020),
+		 * so the hardware really never completes the flush.  Dump what
+		 * the host sees, to tell "command never accepted" (GPU_STATUS /
+		 * power state sane but RAWSTAT empty) from "GPU not powered or in
+		 * reset" (PWR_STATUS / PWR_IRQ_RAWSTAT odd).
+		 */
+		dev_err(kbdev->dev,
+			"xaga: cache-clean stuck RAWSTAT=0x%08x MASK=0x%08x STAT=0x%08x GPU_STATUS=0x%08x in_progress=%d host_pwr_iface=%d\n",
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_RAWSTAT)),
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_MASK)),
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_STATUS)),
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_STATUS)),
+			kbdev->cache_clean_in_progress, kbdev->pm.backend.has_host_pwr_iface);
+		if (kbdev->pm.backend.has_host_pwr_iface)
+			dev_err(kbdev->dev,
+				"xaga: power PWR_IRQ_RAWSTAT=0x%08x PWR_IRQ_MASK=0x%08x PWR_IRQ_STATUS=0x%08x PWR_STATUS=0x%08x%08x\n",
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_RAWSTAT)),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_MASK)),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_STATUS)),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS) + 4),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS)));
+
 		if (kbase_prepare_to_reset_gpu(kbdev, RESET_FLAGS_NONE)) {
 #if IS_ENABLED(CONFIG_MALI_MTK_MBRAIN_SUPPORT)
 			ged_mali_event_update_gpu_reset_nolock(GPU_RESET_BUSY_WAIT_CACHE_OP_TIMEOUT);
