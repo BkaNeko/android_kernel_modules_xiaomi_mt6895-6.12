@@ -348,3 +348,78 @@ xaga: gpufreq_power_control(ON) = 0        ← 官方序列执行成功
 xaga: cache-clean stuck …                  ← 应消失
 Firmware hang detected                     ← 应为 0
 ```
+
+## 11. 更深一层根因（round 4）：GPUEB 的 IPI 通道表解析错位
+
+### 现象
+
+```
+[GPU/EB] gpueb_ipidev (with 8 IPI) has registered.
+[FHCTL-DIAG] [GPUEB] ipi_get channel_id: 4
+[FHCTL-DIAG] [GPUEB] ipi_register fail, ret -3      ← IPI_UNAVAILABLE
+[FHCTL-DIAG] [GPUEB] init failed for pll mfgpll: -517
+```
+
+`-3` = `IPI_UNAVAILABLE`（`include/linux/soc/mediatek/mtk_tinysys_ipi.h:113`
+"can't find this ipi pin define"），来自
+`mtk_ipi_register()`：`if (!ipidev->table[ipi_id].pin_recv) return IPI_UNAVAILABLE;`
+
+### 原因：recv-table 每条元素个数与 DT 不一致
+
+`drivers/gpu/mediatek/gpueb/gpueb_ipi.c`：
+
+```c
+enum table_item_num {
+    send_item_num = 3,
+    recv_item_num = 5,      /* ← 5.10 是 4 */
+};
+gpueb_mboxdev.recv_count = cnt_elems / recv_item_num;
+...
+i * recv_item_num,     /* chan_id */
+i * recv_item_num + 1, /* mbox   */
+i * recv_item_num + 2, /* msg_size */
+i * recv_item_num + 3, /* recv_opt */
+i * recv_item_num + 4, /* cb_opt（5.10 没有这个字段）*/
+```
+
+而 DT（`mt6895.dts` 的 `gpueb@13c00000`）每条 recv 只有 **4** 个数：
+
+```
+recv-table = <0 0 4 0>, <1 0 8 1>, <2 0 1 0>, <3 0 1 0>,
+             <4 0 1 1>, <5 0 4 1>, <6 0 1 1>, <7 0 6 1>;
+```
+
+32 个元素 / 5 = **6**（应为 8），且 `chan_id` 全部按步长 5 错位读取。
+通道 4（`IPI_ID_FHCTL`）因此没有 recv pin → `IPI_UNAVAILABLE`。
+
+更糟的是 `+4`（cb_opt）这一读：stride=4 时 `i=7` 会索引第 32 个元素（越界），
+读取失败后 `return false`，**整个 IPI 表初始化直接失败**。
+
+### 后果
+
+GPUEB 的 IPI 全不可用 →
+
+- `clk-fhctl-gpueb` 的 gpu0/gpu2/gpu3 全部 init 失败（观察到的 `-517`）
+- `gpufreq_v2` 给 GPUEB 发 `CMD_POWER_CONTROL` 走同一条 IPI → **发不出去**
+- MT6895 的 AP 侧没有电源序列（`platform_eb_fp` 无 `.power_control`，
+  `__gpufreq_power_control()` 是空实现直接 `return 1`），电源只能由 EB 执行
+- ⇒ **GPU 永远得不到 MTCMOS/BUCK 上电** → `GPU_COMMAND(FLUSH_CACHES)` 被丢弃
+  → `CLEAN_CACHES_COMPLETED` 永不置位 → 固件 `0x809e00` 死循环 → CSFFW Oops
+
+### 修复
+
+1. `recv_item_num` 改为 4（与 5.10 及本 DT 一致）；
+2. 改为从 `recv-name-table` 推导每条元素个数（`cnt_elems / name_cnt`），
+   同时兼容 4 词与 5 词布局；
+3. `cb_opt(+4)` 仅在 stride > 4 时读取，否则默认 0 且不因越界中止初始化；
+4. 增加诊断输出：`xaga: recv table <n> elems, stride <s>` 与
+   `xaga: recv pins = 8 [0 1 2 3 4 5 6 7 ]`。
+
+### 判据
+
+```
+xaga: recv table 32 elems, stride 4      ← 正确
+xaga: recv pins = 8 [0 1 2 3 4 5 6 7 ]   ← 通道齐全
+[FHCTL-DIAG] [GPUEB] ipi_register fail   ← 应消失
+xaga: gpufreq_power_control(ON) = ...    ← 应不再返回负值
+```

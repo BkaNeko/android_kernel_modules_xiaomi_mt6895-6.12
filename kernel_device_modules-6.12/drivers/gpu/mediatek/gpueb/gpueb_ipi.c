@@ -54,10 +54,21 @@ static int gpueb_ipi_table_init(struct platform_device *pdev)
 {
 	enum table_item_num {
 		send_item_num = 3,
-		recv_item_num = 5
+		/* xaga: DT recv-table entries carry 4 u32 each
+		 * (id, mbox, recv_size, recv_opt) - the same layout the 5.10
+		 * driver used.  This tree asked for 5, so recv_count became
+		 * 32/5 = 6 instead of 8 and every chan_id was read at a stride
+		 * of 5, i.e. misaligned.  Channel 4 (IPI_ID_FHCTL) then had no
+		 * recv pin and mtk_ipi_register() returned IPI_UNAVAILABLE(-3),
+		 * which killed every GPUEB IPI exchange: FHCTL logged
+		 * "ipi_register fail, ret -3" and gpufreq could never send
+		 * CMD_POWER_CONTROL to the EB, so the GPU was never powered.
+		 */
+		recv_item_num = 4
 	};
 	int ret;
 	u32 i, mbox_id, recv_opt, cb_opt, pin_name_size, cnt_elems;
+	u32 recv_stride;
 	const char *prop_send_table = "send_table";
 	const char *prop_recv_table = "recv_table";
 	const char *prop_send_name = "send_name_table";
@@ -123,7 +134,23 @@ static int gpueb_ipi_table_init(struct platform_device *pdev)
 		gpueb_log_d(GPUEB_TAG, "recv table not found");
 		return false;
 	}
-	gpueb_mboxdev.recv_count = cnt_elems / recv_item_num;
+	/* xaga: derive the per-entry u32 count from recv-name-table so both
+	 * the 4-word layout used by the 5.10 driver and this DT
+	 * (id, mbox, recv_size, recv_opt) and the 5-word layout that also
+	 * carries cb_opt are handled.  Hard-coding a wrong stride silently
+	 * misaligns every chan_id and drops channels.
+	 */
+	recv_stride = recv_item_num;
+	{
+		int name_cnt = of_property_count_strings(pdev->dev.of_node,
+							 prop_recv_name);
+
+		if (name_cnt > 0 && (cnt_elems % name_cnt) == 0)
+			recv_stride = cnt_elems / name_cnt;
+	}
+	dev_info(&pdev->dev, "xaga: recv table %u elems, stride %u\n",
+		 cnt_elems, recv_stride);
+	gpueb_mboxdev.recv_count = cnt_elems / recv_stride;
 
 	// Get send PIN name
 	ret = of_property_read_string_array(pdev->dev.of_node,
@@ -232,7 +259,7 @@ static int gpueb_ipi_table_init(struct platform_device *pdev)
 	for (i = 0; i < gpueb_mboxdev.recv_count; ++i) {
 		ret = of_property_read_u32_index(pdev->dev.of_node,
 				prop_recv_table,
-				i * recv_item_num,
+				i * recv_stride,
 				&gpueb_mbox_pin_recv[i].chan_id);
 		if (ret) {
 			gpueb_log_d(GPUEB_TAG, "Cannot get ipi id (%d):%d", i, __LINE__);
@@ -242,7 +269,7 @@ static int gpueb_ipi_table_init(struct platform_device *pdev)
 
 		ret = of_property_read_u32_index(pdev->dev.of_node,
 				prop_recv_table,
-				i * recv_item_num + 1,
+				i * recv_stride + 1,
 				&mbox_id);
 		if (ret) {
 			gpueb_log_d(GPUEB_TAG, "Cannot get mbox id (%d):%d", i, __LINE__);
@@ -253,7 +280,7 @@ static int gpueb_ipi_table_init(struct platform_device *pdev)
 
 		ret = of_property_read_u32_index(pdev->dev.of_node,
 				prop_recv_table,
-				i * recv_item_num + 2,
+				i * recv_stride + 2,
 				&gpueb_mbox_pin_recv[i].msg_size);
 		if (ret) {
 			gpueb_log_d(GPUEB_TAG, "Cannot get pin size (%d):%d", i, __LINE__);
@@ -262,7 +289,7 @@ static int gpueb_ipi_table_init(struct platform_device *pdev)
 
 		ret = of_property_read_u32_index(pdev->dev.of_node,
 				prop_recv_table,
-				i * recv_item_num + 3,
+				i * recv_stride + 3,
 				&recv_opt);
 		if (ret) {
 			gpueb_log_d(GPUEB_TAG, "Cannot get recv opt (%d):%d", i, __LINE__);
@@ -271,13 +298,21 @@ static int gpueb_ipi_table_init(struct platform_device *pdev)
 		/* because recv_opt(0:receive ,1: response) is a bit-field */
 		gpueb_mbox_pin_recv[i].recv_opt = recv_opt;
 
-		ret = of_property_read_u32_index(pdev->dev.of_node,
-				prop_recv_table,
-				i * recv_item_num + 4,
-				&cb_opt);
-		if (ret) {
-			gpueb_log_d(GPUEB_TAG, "Cannot get callback opt (%d):%d", i, __LINE__);
-			return false;
+		/* xaga: cb_opt only exists in the 5-word layout.  With the
+		 * 4-word layout the index would run past the property (i=7 reads
+		 * element 32 of a 32-element array), fail, and abort the whole
+		 * IPI table init - so default it instead.
+		 */
+		cb_opt = 0;
+		if (recv_stride > 4) {
+			ret = of_property_read_u32_index(pdev->dev.of_node,
+					prop_recv_table,
+					i * recv_stride + 4,
+					&cb_opt);
+			if (ret) {
+				gpueb_log_d(GPUEB_TAG, "Cannot get callback opt (%d):%d", i, __LINE__);
+				return false;
+			}
 		}
 		/* because cb_ctx_opt(0:isr context, 1:process context) is a bit-field */
 		gpueb_mbox_pin_recv[i].cb_ctx_opt = cb_opt;
@@ -372,6 +407,22 @@ int gpueb_ipi_init(struct platform_device *pdev)
 	 * If you need specific design on it, you must adjust
 	 * the registered ipi num to the big one.
 	 */
+	/* xaga: make the parsed channel map visible - a misaligned
+	 * recv-table stride silently drops channels and every IPI to the EB
+	 * then fails with IPI_UNAVAILABLE(-3).
+	 */
+	{
+		unsigned int k;
+		char ids[96] = "";
+		int len = 0;
+
+		for (k = 0; k < gpueb_mboxdev.recv_count && len < 88; k++)
+			len += scnprintf(ids + len, sizeof(ids) - len, "%u ",
+					 gpueb_mbox_pin_recv[k].chan_id);
+		dev_info(&pdev->dev, "xaga: recv pins = %u [%s]\n",
+			 gpueb_mboxdev.recv_count, ids);
+	}
+
 	ret = mtk_ipi_device_register(
 			&gpueb_ipidev,
 			pdev,
