@@ -210,3 +210,58 @@ dmesg | grep xaga_reg | tail -3
 ```
 
 若手动发命令后 bit17 仍不置位，则确认硬件/电源层面问题，而非命令或编码问题。
+
+## 9. 补充：时钟与 MFG 包装层（round 2）
+
+### 时钟已确认正常
+
+真机日志：
+
+```
+[CSF CLK] clk_prepare_enable(bg3d) = 0 / (pll_main) = 0 / (pll_sc) = 0
+[CSF CLK CCF] mux_0: rate=429999955 Hz | mux_1: rate=385000031 Hz
+[CSF CLK FMETER] MFGPLL calc=430000 kHz fmeter=430015 kHz | MFGSCPLL calc=385000 fmeter=385023 kHz
+[CSF CLK] CLK_CFG_30 read-back: 0xff030000 (bits 16:17 = 1:1)
+```
+
+`mt6895_acquire_clocks()` 拿到了 DT 里全部 9 个时钟（`mfgcfg_bg3d`、`mfg_ao_mfgpll`、
+`mfgsc_ao_mfgscpll`、`mfg_sel_0/1`、`mfgpll_ck`、`mfgscpll_ck`、`mfg_ref_ck`、
+`mfgsc_ref_ck`），使能全部返回 0，两个 PLL 均锁定且 fmeter 与计算值一致。
+**所以"时钟没开"不成立。**
+
+### 真正可疑处：手写的 platform 代码
+
+| 文件 | 行数 | 说明 |
+|---|---|---|
+| `platform/mt6895/mali_kbase_config_mt6895.c`（我们） | 910 | 含 `mt6895_acquire_clocks` / `mt6895_power_on_clocks` / `mt6895_power_off_clocks` / `mt6895_pdca_config` / `mt6895_apply_stock_hw_sequences` / `xaga_prepower_cores` |
+| 同文件（5.10 r54 能正常工作） | 506 | 只有标准 `pm_callback_*`，时钟由通用 `kbase_pm` 走 DT 列表 |
+
+也就是说：**我们的时钟上电序列和 MFG 包装层初始化都是手写反向出来的**，不是 5.10 的原路径。
+
+`mt6895_apply_stock_hw_sequences()`（mask=0x7）当前做：
+
+- **bit0** I2M Protector：`0x13fbf000+0xF60..0xFA8`，末写 `0x20300317`（`GPM_ENABLE`）
+- **bit1** DCM：`MFG_DCM_CON_0(0x010)`、`MFG_ASYNC_CON_1(0x024)`、`MFG_GLOBAL_CON(0x0B0)`、
+  `MFG_QCHANNEL_CON(0x0B4)` 置 bit4、`MFG_RPC_AO_CLK_CFG(0x13f91034)` 清 bit0、
+  MFGRPC AXI protect 清 `0x000f000f`
+- **bit2** ACP 一致性序列：`0x168`、`0x8E0..0x928`
+
+`xaga_prepower_cores()` 则直接写 `STACK/SHADER/TILER_PWRON`（0xE20 / 0x180 / 0x190）
+并轮询 `READY` / `PWRTRANS`，然后清 `GPU_IRQ_CLEAR(0x024)` 与 `MCU_GPU_IRQ_CLEAR(0x3024)`。
+
+**注意**：直写 `PWRON` 是"旧式/无 host power interface"的做法。若
+`has_host_pwr_iface == 1`（`KBASE_HW_FEATURE_POWER_CONTROL`），DDK 本应通过
+`PWR_COMMAND`(0x828) / `PWR_CMDARG`(0x830) / `PWR_STATUS`(0x820) 握手，直写 `PWRON`
+会绕过这套状态机。这是目前最可疑的单点。
+
+### 下轮判据（新代码已会打印）
+
+```
+xaga: cache-clean stuck … host_pwr_iface=?
+xaga: power PWR_IRQ_RAWSTAT=… PWR_STATUS=…
+```
+
+- `host_pwr_iface=1` → 我们的 prepower 绕过协议 → 改为让 DDK 走 `PWR_COMMAND`，
+  或把 prepower 限定在 `host_pwr_iface==0` 时执行
+- `host_pwr_iface=0` → 直写 PWRON 正确，问题在 MFG 包装层某个序列（对比 5.10 的
+  `0x13fbf0xx` 初值）
