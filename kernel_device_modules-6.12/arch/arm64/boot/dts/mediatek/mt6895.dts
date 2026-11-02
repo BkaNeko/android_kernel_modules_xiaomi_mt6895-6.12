@@ -2755,11 +2755,11 @@
 			clock-div = <1>;
 		};
 
-		/* xaga: the vendor vibrator HAL needs /sys/class/leds/vibrator,
-		 * otherwise it exits with ENODEV and system_server blocks forever
-		 * in VibratorManagerService.nativeGetVibratorIds(), so the system
-		 * never reaches sys.boot_completed=1.
-		 */
+/*
+ * xaga: the regulator-vibrator node stays disabled on purpose.  Stock xaga
+ * exposes only lcd-backlight under /sys/class/leds; the haptic is the AW86927
+ * on i2c1, wired up in xaga-aw8697-haptic.dtsi.  Enabling this node would add
+ * a /sys/class/leds/vibrator that the vendor vibrator HAL does not expect.
 		regulator_vibrator: regulator_vibrator {
 			compatible = "regulator-vibrator";
 			label = "vibrator";
@@ -2767,6 +2767,7 @@
 			max-volt = <3500000>;
 			vib-supply = <&mt6368_vibr>;
 		};
+ */
 
 		mtk_leds: mtk_leds {
 			backlight {
@@ -15539,3 +15540,4 @@ cpuqos_mode,dnth0,dnth1,upth0,upth1";
 #include "mt6895-clkitg.dtsi"
 #include "mt6895-disable-unused.dtsi"
 #include "trusty.dtsi"
+#include "xaga-aw8697-haptic.dtsi"
