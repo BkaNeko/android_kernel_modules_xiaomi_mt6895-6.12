@@ -16,6 +16,7 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 #include <linux/file.h>
+#include "xaga_hwc_abi.h"
 #include <linux/string.h>
 #include <linux/mm.h>
 //#include <mt-plat/mtk_chip.h>
@@ -58,6 +59,9 @@ module_param(bypass_skip_trans, int, 0644);
 extern unsigned int g_mml_mode;
 
 static struct drm_mtk_layering_info layering_info;
+
+/* xaga: set while translating the vendor HWC legacy layering ABI */
+static bool layering_legacy_mode;
 static bool g_hrt_valid;
 static bool g_blank_lyr_valid;
 #ifdef HRT_UT_DEBUG
@@ -3860,6 +3864,55 @@ _copy_layer_info_from_disp(struct drm_mtk_layering_info *disp_info_user,
 	}
 
 	layer_num = l_info->layer_num[disp_idx];
+	if (layering_legacy_mode) {
+		struct xaga_hwc_layer *legacy;
+		struct drm_mtk_layer_config *native;
+		unsigned long legacy_size =
+			sizeof(struct xaga_hwc_layer) * layer_num;
+		int i;
+
+		legacy = vzalloc(legacy_size);
+		if (!legacy)
+			return -ENOMEM;
+		if (copy_from_user(legacy,
+				   disp_info_user->input_config[disp_idx],
+				   legacy_size)) {
+			vfree(legacy);
+			return -EFAULT;
+		}
+		layer_size = sizeof(struct drm_mtk_layer_config) * layer_num;
+		l_info->input_config[disp_idx] = vzalloc(layer_size);
+		if (!l_info->input_config[disp_idx]) {
+			vfree(legacy);
+			return -ENOMEM;
+		}
+		native = l_info->input_config[disp_idx];
+		for (i = 0; i < layer_num; i++) {
+			native[i].ovl_id = legacy[i].ovl_id;
+			native[i].src_fmt = legacy[i].src_fmt;
+			native[i].dataspace = legacy[i].dataspace;
+			native[i].dst_offset_x = legacy[i].dst_offset_x;
+			native[i].dst_offset_y = legacy[i].dst_offset_y;
+			native[i].dst_width = legacy[i].dst_width;
+			native[i].dst_height = legacy[i].dst_height;
+			native[i].ext_sel_layer = legacy[i].ext_sel_layer;
+			native[i].src_offset_x = legacy[i].src_offset_x;
+			native[i].src_offset_y = legacy[i].src_offset_y;
+			native[i].src_width = legacy[i].src_width;
+			native[i].src_height = legacy[i].src_height;
+			native[i].layer_caps = legacy[i].layer_caps;
+			native[i].clip = legacy[i].clip;
+			native[i].compress = legacy[i].compress;
+			native[i].secure = legacy[i].secure;
+		}
+		vfree(legacy);
+		/* legacy requests carry no MML configuration */
+		l_info->mml_cfg[disp_idx] = vzalloc(
+			sizeof(struct mml_frame_info) * layer_num);
+		if (!l_info->mml_cfg[disp_idx])
+			return -ENOMEM;
+		return 0;
+	}
 	layer_size = sizeof(struct drm_mtk_layer_config) * layer_num;
 	l_info->input_config[disp_idx] = vzalloc(layer_size);
 	if (l_info->input_config[disp_idx] == NULL) {
@@ -5693,6 +5746,63 @@ static int gen_hrt_pattern(struct drm_device *dev)
 #endif
 
 /**** UT Program end ****/
+
+int xaga_layering_rule_ioctl(struct drm_device *dev, void *data,
+			     struct drm_file *file_priv)
+{
+	struct xaga_hwc_layering *old = data;
+	struct drm_mtk_layering_info info = {0};
+	int i, ret;
+
+	for (i = 0; i < LYE_CRTC; i++) {
+		info.gles_head[i] = -1;
+		info.gles_tail[i] = -1;
+	}
+	for (i = 0; i < XAGA_HWC_DISPLAYS; i++) {
+		if (old->layer_num[i] < 0 ||
+		    old->layer_num[i] > XAGA_HWC_MAX_LAYERS)
+			return -EINVAL;
+		if (i && old->layer_num[i])
+			return -EOPNOTSUPP;
+		info.input_config[i] = u64_to_user_ptr(old->input_config[i]);
+		info.disp_mode[i] = old->disp_mode[i];
+		info.disp_mode_idx[i] = old->disp_mode_idx[i];
+		info.layer_num[i] = old->layer_num[i];
+		info.gles_head[i] = old->gles_head[i];
+		info.gles_tail[i] = old->gles_tail[i];
+		if (old->layer_num[i])
+			info.disp_list |= BIT(i);
+	}
+	info.hrt_num = old->hrt_num;
+	info.res_idx = old->res_idx;
+	info.hrt_weight = old->hrt_weight;
+	info.hrt_idx = old->hrt_idx;
+
+	mutex_lock(&layering_rule_lock);
+	layering_legacy_mode = true;
+	ret = layering_rule_start(&info, 0, dev);
+	layering_legacy_mode = false;
+	if (!ret) {
+		for (i = 0; i < XAGA_HWC_DISPLAYS; i++) {
+			old->gles_head[i] = info.gles_head[i];
+			old->gles_tail[i] = info.gles_tail[i];
+		}
+		old->hrt_num = info.hrt_num;
+		old->res_idx = info.res_idx;
+		old->hrt_weight = info.hrt_weight;
+		old->hrt_idx = info.hrt_idx;
+		dev_info_once(dev->dev,
+			      "xaga: legacy HRT layers=%d ret=0 hrt=%d idx=%u\n",
+			      info.layer_num[0], info.hrt_num, info.hrt_idx);
+	} else {
+		dev_warn_ratelimited(dev->dev,
+				     "xaga: legacy HRT layers=%d failed: %d\n",
+				     info.layer_num[0], ret);
+	}
+	mutex_unlock(&layering_rule_lock);
+
+	return ret;
+}
 
 int mtk_layering_rule_ioctl(struct drm_device *dev, void *data,
 			    struct drm_file *file_priv)

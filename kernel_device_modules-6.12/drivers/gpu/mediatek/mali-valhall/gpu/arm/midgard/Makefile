@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
 #
-# (C) COPYRIGHT 2012-2021 ARM Limited. All rights reserved.
+# (C) COPYRIGHT 2012-2024 ARM Limited. All rights reserved.
 #
 # This program is free software and is provided to you under the terms of the
 # GNU General Public License version 2 as published by the Free Software
@@ -17,75 +17,8 @@
 # http://www.gnu.org/licenses/gpl-2.0.html.
 #
 #
-MTK_PLATFORM ?= mt6895
-MTK_PLATFORM_VERSION := $(if $(CONFIG_MTK_PLATFORM),$(CONFIG_MTK_PLATFORM:"%"=%),$(MTK_PLATFORM))
 
-ifeq ($(MTK_PLATFORM_VERSION),mt6789)
-MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
-MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
-CONFIG_MALI_REAL_HW := y
-CONFIG_MALI_DEBUG := y
-CONFIG_MALI_MIDGARD_DVFS := y
-CONFIG_MALI_DEVFREQ := y
-CONFIG_MALI_MTK_DEBUG := y
-CONFIG_MALI_MTK_MEM_TRACK := y
-CONFIG_MALI_MTK_DEVFREQ := y
-CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
-CONFIG_MALI_MTK_GPU_BM_2 := y
-CONFIG_MALI_MTK_MFGSYS_PM := y
-CONFIG_MALI_SCMI_ENABLE := y
-endif
-
-ifeq ($(MTK_PLATFORM_VERSION),mt6893)
-MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
-MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
-CONFIG_MALI_REAL_HW := y
-CONFIG_MALI_DEBUG := y
-CONFIG_MALI_MIDGARD_DVFS := y
-CONFIG_MALI_DEVFREQ := y
-CONFIG_MALI_MTK_DEBUG := y
-CONFIG_MALI_MTK_DEBUG_DFD := y
-CONFIG_MALI_MTK_MEM_TRACK := y
-CONFIG_MALI_MTK_DEVFREQ := y
-CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
-CONFIG_MALI_MTK_GPU_BM_2 := y
-endif
-
-ifeq ($(MTK_PLATFORM_VERSION),mt6833)
-MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
-MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
-CONFIG_MALI_REAL_HW := y
-CONFIG_MALI_DEBUG := y
-CONFIG_MALI_MIDGARD_DVFS := y
-CONFIG_MALI_DEVFREQ := y
-CONFIG_MALI_MTK_MEM_TRACK := y
-CONFIG_MALI_MTK_DEVFREQ := y
-CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
-CONFIG_MALI_MTK_GPU_BM_2 := y
-endif
-
-ifeq ($(MTK_PLATFORM_VERSION),mt6983)
-MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
-MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
-CONFIG_MALI_CSF_SUPPORT := y
-CONFIG_MALI_REAL_HW := y
-CONFIG_MALI_DEBUG := y
-CONFIG_MALI_MIDGARD_DVFS := y
-CONFIG_MALI_DEVFREQ := y
-CONFIG_MALI_FENCE_DEBUG := y
-CONFIG_MALI_MTK_DUMMY_CM := y
-CONFIG_MALI_MTK_FENCE_DEBUG := y
-CONFIG_MALI_MTK_TIMEOUT_RESET := y
-CONFIG_MALI_MTK_KCPU_DEBUG := y
-CONFIG_MALI_MTK_DEBUG := y
-CONFIG_MALI_MTK_MEM_TRACK := y
-CONFIG_MALI_MTK_DEVFREQ := y
-CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
-CONFIG_MALI_MTK_GPU_BM_2 := y
-CONFIG_MALI_PMU_LP4 := y
-CONFIG_MALI_SCMI_ENABLE := y
-CONFIG_MALI_MTK_MFGSYS_PM := y
-endif
+MTK_PLATFORM_VERSION := $(CONFIG_MTK_PLATFORM:"%"=%)
 
 ifeq ($(MTK_PLATFORM_VERSION),mt6895)
 MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
@@ -103,54 +36,213 @@ CONFIG_MALI_MTK_MFGSYS_PM := y
 CONFIG_MALI_SCMI_ENABLE := y
 endif
 
-ifeq ($(MTK_PLATFORM_VERSION),mt6879)
-MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
-MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
-CONFIG_MALI_CSF_SUPPORT := y
-CONFIG_MALI_REAL_HW := y
-CONFIG_MALI_DEBUG := y
-CONFIG_MALI_MIDGARD_DVFS := y
-CONFIG_MALI_DEVFREQ := y
-CONFIG_MALI_FENCE_DEBUG := y
-CONFIG_MALI_MTK_FENCE_DEBUG := y
-CONFIG_MALI_MTK_DEBUG := y
-CONFIG_MALI_MTK_MEM_TRACK := y
-CONFIG_MALI_MTK_DEVFREQ := y
-CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
-CONFIG_MALI_MTK_GPU_BM_2 := y
-CONFIG_MALI_MTK_GPU_LOW_POWER := y
-CONFIG_MALI_MTK_MFGSYS_PM := y
-CONFIG_MALI_SCMI_ENABLE := y
+ifeq ($(BUILD_RULE),OOT)
+    ifeq ($(MTK_PLATFORM_VERSION),mt6991)
+        MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
+        MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
+
+        # *** Arm CONFIG ***
+        CONFIG_MALI_CSF_SUPPORT := y
+        CONFIG_MALI_REAL_HW := y
+        CONFIG_MALI_DEBUG := y
+        CONFIG_MALI_MIDGARD_DVFS := y
+        CONFIG_MALI_DEVFREQ := y
+        CONFIG_MALI_FENCE_DEBUG := y
+        CONFIG_LARGE_PAGE_SUPPORT := y
+        CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD := y
+
+        # *** MTK CONFIG ***
+        CONFIG_MALI_MTK_POWER_TRANSITION_TIMEOUT_DEBUG := y
+        CONFIG_MALI_MTK_BRINGUP := n
+        CONFIG_MALI_MTK_LOG_BUFFER := y
+        CONFIG_MALI_MTK_LOG_BUFFER_ENLARGE := n
+        CONFIG_MALI_MTK_FENCE_DEBUG := y
+        CONFIG_MALI_MTK_DEBUG_DUMP := y
+        CONFIG_MALI_MTK_MMAP_LOGGING := y
+        CONFIG_MALI_MTK_WHITEBOX_FORCE_HARD_RESET := y
+        CONFIG_MALI_MTK_WHITEBOX_FORCE_TERMINATE_CSG := y
+        CONFIG_MALI_MTK_WHITEBOX_DIRECTLY_HARD_RESET := y
+        CONFIG_MALI_MTK_WHITEBOX_FAULT_WORKER := y
+        CONFIG_MALI_MTK_FENCE_TIMEOUT_RESET := n
+        CONFIG_MALI_MTK_CROSS_QUEUE_SYNC_RECOVERY := n
+        CONFIG_MALI_MTK_SYSFS := y
+        CONFIG_MALI_MTK_PROC_FS := y
+        CONFIG_MALI_MTK_RESET_RELOAD_ON_FW := y
+        CONFIG_MALI_MTK_GPU_IDLE_STRESS_TEST := y
+        CONFIG_MALI_MTK_DEBUG_FS := y
+        CONFIG_MALI_MTK_WHITEBOX_MISSING_DOORBELL := y
+        CONFIG_MALI_MTK_HWCNT_HINT := y
+        CONFIG_MALI_MTK_KE_DUMP_FWLOG := y
+        CONFIG_MALI_MTK_PROTECTED_PATCH := y
+        CONFIG_MALI_MTK_PREVENT_PRINTK_TOO_MUCH := y
+        CONFIG_MALI_MTK_POWER_RESET := y
+        CONFIG_MALI_MTK_HARD_RESET_WA := y
+        CONFIG_MALI_MTK_DEVFREQ_GOVERNOR := y
+        CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
+        CONFIG_MALI_MTK_GPUEB_IRQ := y
+        CONFIG_MALI_MTK_WHITEBOX_MCU := y
+        CONFIG_MALI_PMU_LP4 := n
+        CONFIG_MALI_PMU_CPB128 := y
+        CONFIG_MALI_MTK_MGMM := y
+        CONFIG_MALI_MTK_MEMTRACK := y
+        CONFIG_MALI_MTK_MEMORY_DEBUG := y
+        CONFIG_MALI_MTK_OOM_LOG_REDUCE := y
+        CONFIG_MALI_MTK_JIT_RECLAIM_ANTITHRASHING := y
+        CONFIG_MALI_MTK_TRIGGER_KE := y
+        CONFIG_MALI_MTK_DIAGNOSIS_MODE := y
+        CONFIG_MALI_MTK_GPU_BM_2 := y
+        CONFIG_MALI_MTK_GHPM_STAGE1_ENABLE := y
+        CONFIG_MALI_MTK_PAGE_FAULT_WB_TILER_RECLAIM := y
+        CONFIG_MALI_MTK_KBASE_MMU_DBG_LOG := y
+        CONFIG_MALI_MTK_UNHANDLED_PAGE_FAULT_DEBUG := y
+        CONFIG_MALI_MTK_UNHANDLED_PAGE_FAULT_DEBUG_NO_KLOG := y
+        CONFIG_MALI_MTK_MMU_DUMP := y
+        CONFIG_MALI_MTK_SOI_DEBUG := y
+        CONFIG_MALI_MTK_DISABLE_SOI := n
+        CONFIG_MALI_MTK_GOV_CORE_MASK_DISABLE := n
+        CONFIG_MALI_MTK_GOV_CORE_MASK_DEBUG := y
+        CONFIG_MALI_MTK_CORE_MASK_SET := y
+        CONFIG_MALI_MTK_KCPUQ_PRIORITZED := y
+        CONFIG_MALI_MTK_USE_WORKQUEUE_FOR_CSF_SCHEDULE := n
+        CONFIG_MALI_MTK_KBASE_TRACE_DEBUG := y
+        CONFIG_MALI_MTK_KBASE_THREAD_DEBUG := y
+        CONFIG_MALI_MTK_TIMELINE_TRACE_DEBUG := y
+        CONFIG_MALI_MTK_IDLE_HYSTERESIS_TIME := y
+        CONFIG_MALI_MTK_GLB_PWROFF_TIMEOUT := y
+        CONFIG_MALI_MTK_SCHEDULER_KTHREAD_PATCH := y
+        CONFIG_MALI_MTK_ADAPTIVE_POWER_POLICY := y
+        CONFIG_MALI_MTK_AUTOSUSPEND_DELAY := y
+        CONFIG_MALI_MTK_GPU_DVFS_HINT_26M_LOADING := y
+        CONFIG_MALI_MTK_GPU_DVFS_ASYNC := y
+        CONFIG_MALI_MTK_GPU_DVFS_READ_SOC_TIMER := y
+        CONFIG_MALI_MTK_CREATE_KCPU_QUEUE_DEBUG := y
+        CONFIG_MALI_MTK_WHITEBOX_MEMORY_FOOTPRINT := y
+        CONFIG_MALI_MTK_CPUQ_DUMP_ENHANCEMENT := y
+        CONFIG_MALI_MTK_SLC_ALL_CACHE_MODE := y
+        CONFIG_MALI_MTK_API_SYNC_UPDATE := y
+        CONFIG_MALI_MTK_MBRAIN_SUPPORT := y
+        CONFIG_MALI_MTK_ITER_TIMEOUT_DBG_LOG := y
+        CONFIG_MALI_MTK_GPU_RESET_DEBUG := y
+        CONFIG_MALI_MTK_FIX_TIMEOUT_WHITELIST := y
+        CONFIG_MALI_MTK_WHITEBOX_SCHEDULER := y
+        CONFIG_MALI_MTK_WHITEBOX_SYNC_UPDATE := y
+        CONFIG_MALI_SCMI_ENABLE := n
+        CONFIG_MALI_MTK_ACP_DSU_REQ := y
+        CONFIG_MALI_MTK_ACP_FORCE_SYNC_DEBUG := y
+        CONFIG_MALI_MTK_SLC_DYNAMIC_POLICY_V2 := y
+        CONFIG_MALI_MTK_WORKER_TOO_LONG_DEBUG := y
+    endif ## mt6991 ##
+
+    ifeq ($(MTK_PLATFORM_VERSION),mt6993)
+        MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
+        MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
+
+        # *** Arm CONFIG ***
+        CONFIG_MALI_CSF_SUPPORT := y
+        CONFIG_MALI_REAL_HW := y
+        CONFIG_MALI_DEBUG := y
+        CONFIG_MALI_MIDGARD_DVFS := y
+        CONFIG_MALI_DEVFREQ := y
+        CONFIG_MALI_FENCE_DEBUG := y
+        CONFIG_LARGE_PAGE_SUPPORT := y
+        CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD := y
+
+        # *** MTK CONFIG ***
+        CONFIG_MALI_MTK_POWER_TRANSITION_TIMEOUT_DEBUG := y
+        CONFIG_MALI_MTK_BRINGUP := n
+        CONFIG_MALI_MTK_LOG_BUFFER := y
+        CONFIG_MALI_MTK_LOG_BUFFER_ENLARGE := y
+        CONFIG_MALI_MTK_FENCE_DEBUG := y
+        CONFIG_MALI_MTK_DEBUG_DUMP := y
+        CONFIG_MALI_MTK_CPUQ_DUMP_ENHANCEMENT := y
+        CONFIG_MALI_MTK_MMAP_LOGGING := y
+        CONFIG_MALI_MTK_WHITEBOX_FORCE_HARD_RESET := y
+        CONFIG_MALI_MTK_WHITEBOX_FORCE_TERMINATE_CSG := y
+        CONFIG_MALI_MTK_WHITEBOX_DIRECTLY_HARD_RESET := y
+        CONFIG_MALI_MTK_WHITEBOX_FAULT_WORKER := y
+        CONFIG_MALI_MTK_FENCE_TIMEOUT_RESET := n
+        CONFIG_MALI_MTK_CROSS_QUEUE_SYNC_RECOVERY := n
+        CONFIG_MALI_MTK_SYSFS := y
+        CONFIG_MALI_MTK_PROC_FS := y
+        CONFIG_MALI_MTK_RESET_RELOAD_ON_FW := y
+        CONFIG_MALI_MTK_GPU_IDLE_STRESS_TEST := y
+        CONFIG_MALI_MTK_DEBUG_FS := y
+        CONFIG_MALI_MTK_WHITEBOX_MISSING_DOORBELL := y
+        CONFIG_MALI_MTK_HWCNT_HINT := y
+        CONFIG_MALI_MTK_KE_DUMP_FWLOG := y
+        CONFIG_MALI_MTK_PROTECTED_PATCH := y
+        CONFIG_MALI_MTK_PREVENT_PRINTK_TOO_MUCH := y
+        CONFIG_MALI_MTK_POWER_RESET := y
+        CONFIG_MALI_MTK_HARD_RESET_WA := y
+        CONFIG_MALI_MTK_DEVFREQ_GOVERNOR := y
+        CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
+        CONFIG_MALI_MTK_GPUEB_IRQ := y
+        CONFIG_MALI_MTK_WHITEBOX_MCU := y
+        CONFIG_MALI_PMU_LP4 := n
+        CONFIG_MALI_PMU_CPB128 := y
+        CONFIG_MALI_MTK_MGMM := y
+        CONFIG_MALI_MTK_MEMTRACK := y
+        CONFIG_MALI_MTK_MEMORY_DEBUG := y
+        CONFIG_MALI_MTK_OOM_LOG_REDUCE := y
+        CONFIG_MALI_MTK_JIT_RECLAIM_ANTITHRASHING := y
+        CONFIG_MALI_MTK_TRIGGER_KE := y
+        CONFIG_MALI_MTK_DIAGNOSIS_MODE := y
+        CONFIG_MALI_MTK_GPU_BM_2 := y
+        CONFIG_MALI_MTK_GHPM_STAGE1_ENABLE := y
+        CONFIG_MALI_MTK_PAGE_FAULT_WB_TILER_RECLAIM := y
+        CONFIG_MALI_MTK_KBASE_MMU_DBG_LOG := y
+        CONFIG_MALI_MTK_UNHANDLED_PAGE_FAULT_DEBUG := y
+        CONFIG_MALI_MTK_UNHANDLED_PAGE_FAULT_DEBUG_NO_KLOG := y
+        CONFIG_MALI_MTK_MMU_DUMP := y
+        CONFIG_MALI_MTK_SOI_DEBUG := y
+        CONFIG_MALI_MTK_DISABLE_SOI := n
+        CONFIG_MALI_MTK_GOV_CORE_MASK_DISABLE := n
+        CONFIG_MALI_MTK_GOV_CORE_MASK_DEBUG := y
+        CONFIG_MALI_MTK_CORE_MASK_SET := y
+        CONFIG_MALI_MTK_KCPUQ_PRIORITZED := y
+        CONFIG_MALI_MTK_USE_WORKQUEUE_FOR_CSF_SCHEDULE := n
+        CONFIG_MALI_MTK_KBASE_TRACE_DEBUG := y
+        CONFIG_MALI_MTK_KBASE_THREAD_DEBUG := y
+        CONFIG_MALI_MTK_TIMELINE_TRACE_DEBUG := y
+        CONFIG_MALI_MTK_WHITEBOX_MEMORY_FOOTPRINT := y
+        CONFIG_MALI_MTK_GPU_DVFS_HINT_26M_LOADING := y
+        CONFIG_MALI_MTK_GPU_DVFS_ASYNC := y
+        CONFIG_MALI_MTK_GPU_DVFS_READ_SOC_TIMER := y
+        CONFIG_MALI_MTK_CREATE_KCPU_QUEUE_DEBUG := y
+        CONFIG_MALI_MTK_ADAPTIVE_POWER_POLICY := y
+        CONFIG_MALI_MTK_AUTOSUSPEND_DELAY := y
+        CONFIG_MALI_MTK_SLC_ALL_CACHE_MODE := y
+        CONFIG_MALI_MTK_MBRAIN_SUPPORT := y
+        CONFIG_MALI_MTK_ITER_TIMEOUT_DBG_LOG := y
+        CONFIG_MALI_MTK_GPU_RESET_DEBUG := y
+        CONFIG_MALI_MTK_FIX_TIMEOUT_WHITELIST := y
+        CONFIG_MALI_MTK_WHITEBOX_SCHEDULER := y
+        CONFIG_MALI_MTK_WHITEBOX_SYNC_UPDATE := y
+        CONFIG_MALI_SCMI_ENABLE := n
+        CONFIG_MALI_MTK_ACP_DSU_REQ := n
+        CONFIG_MALI_MTK_ACP_FORCE_SYNC_DEBUG := y
+        CONFIG_MALI_MTK_SLC_DYNAMIC_POLICY_V2 := y
+        CONFIG_MALI_MTK_WORKER_TOO_LONG_DEBUG := y
+        CONFIG_MALI_MTK_IDLE_HYSTERESIS_TIME := y
+        CONFIG_MALI_MTK_GLB_PWROFF_TIMEOUT := y
+        CONFIG_MALI_MTK_SCHEDULER_KTHREAD_PATCH := y
+        CONFIG_MALI_MTK_API_SYNC_UPDATE := y
+        CONFIG_MALI_MTK_IRQ_REDUCTION := y
+    endif ## mt6993 ##
 endif
 
-ifeq ($(MTK_PLATFORM_VERSION),mt6768)
-MTK_GPU_VERSION := $(LOCAL_MTK_GPU_VERSION)
-MTK_PLATFORM := $(MTK_PLATFORM_VERSION)
-CONFIG_MALI_REAL_HW := y
-CONFIG_MALI_DEBUG := y
-CONFIG_MALI_MIDGARD_DVFS := y
-CONFIG_MALI_DEVFREQ := y
-CONFIG_MALI_MTK_MEM_TRACK := y
-CONFIG_MALI_MTK_DEVFREQ := y
-CONFIG_MALI_MTK_DEVFREQ_THERMAL := y
-endif
 
 # make $(src) as absolute path if it is not already, by prefixing $(srctree)
 # This is to prevent any build issue due to wrong path.
-# src:=$(if $(patsubst /%,,$(src)),$(srctree)/$(src),$(src))
 
+# MTK modify for Google build.sh
+# src:=$(if $(patsubst /%,,$(src)),$(srctree)/$(src),$(src))
 KO_CODE_PATH := $(if $(filter /%,$(src)),,$(srctree)/)$(src)
 
 #
 # Prevent misuse when Kernel configurations are not present by default
 # in out-of-tree builds
 #
-ifneq ($(CONFIG_ANDROID),n)
-ifeq ($(CONFIG_GPU_TRACEPOINTS),n)
-    $(error CONFIG_GPU_TRACEPOINTS must be set in Kernel configuration)
-endif
-endif
-
 ifeq ($(CONFIG_DMA_SHARED_BUFFER),n)
     $(error CONFIG_DMA_SHARED_BUFFER must be set in Kernel configuration)
 endif
@@ -167,6 +259,10 @@ ifeq ($(CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND),n)
     $(error CONFIG_DEVFREQ_GOV_SIMPLE_ONDEMAND must be set in Kernel configuration)
 endif
 
+ifeq ($(CONFIG_FW_LOADER), n)
+    $(error CONFIG_FW_LOADER must be set in Kernel configuration)
+endif
+
 ifeq ($(CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS), y)
     ifneq ($(CONFIG_DEBUG_FS), y)
         $(error CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS depends on CONFIG_DEBUG_FS to be set in Kernel configuration)
@@ -174,10 +270,8 @@ ifeq ($(CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS), y)
 endif
 
 ifeq ($(CONFIG_MALI_FENCE_DEBUG), y)
-    ifneq ($(CONFIG_SYNC), y)
-        ifneq ($(CONFIG_SYNC_FILE), y)
-            $(error CONFIG_MALI_FENCE_DEBUG depends on CONFIG_SYNC || CONFIG_SYNC_FILE to be set in Kernel configuration)
-        endif
+    ifneq ($(CONFIG_SYNC_FILE), y)
+        $(error CONFIG_MALI_FENCE_DEBUG depends on CONFIG_SYNC_FILE to be set in Kernel configuration)
     endif
 endif
 
@@ -188,13 +282,14 @@ endif
 # *** MTK ***
 $(info *GPU [mtk-Kbuild] src = $(src))
 $(info *GPU [mtk-Kbuild] srctree = $(srctree))
+$(info *GPU [mtk-Kbuild] KO_CODE_PATH = $(KO_CODE_PATH))
 include $(KO_CODE_PATH)/Kbuild-mtk-custom-env
 include $(KO_CODE_PATH)/platform/mtk_platform_common/Kbuild
 ccflags-y += -I$(KO_CODE_PATH)/include
 subdir-ccflags-y += -I$(KO_CODE_PATH)/include
 
 # Driver version string which is returned to userspace via an ioctl
-MALI_RELEASE_NAME ?= '"r32p1-01eac0"'
+MALI_RELEASE_NAME ?= '"r54p1-11eac0"'
 # Set up defaults if not defined by build system
 ifeq ($(CONFIG_MALI_DEBUG), y)
     MALI_UNIT_TEST = 1
@@ -205,22 +300,17 @@ else
 endif
 MALI_COVERAGE ?= 0
 
-CONFIG_MALI_PLATFORM_NAME ?= "mt6895"
+CONFIG_MALI_PLATFORM_NAME ?= "devicetree"
 
 # Kconfig passes in the name with quotes for in-tree builds - remove them.
 MALI_PLATFORM_DIR := $(shell echo $(CONFIG_MALI_PLATFORM_NAME))
-ifeq ($(MALI_PLATFORM_DIR),)
-MALI_PLATFORM_DIR := mt6895
-endif
 
 include $(KO_CODE_PATH)/platform/$(MALI_PLATFORM_DIR)/Kbuild
 
 ifeq ($(CONFIG_MALI_CSF_SUPPORT),y)
     MALI_JIT_PRESSURE_LIMIT_BASE = 0
-    MALI_USE_CSF = 1
 else
     MALI_JIT_PRESSURE_LIMIT_BASE ?= 1
-    MALI_USE_CSF ?= 0
 endif
 
 ifneq ($(CONFIG_MALI_KUTF), n)
@@ -235,23 +325,19 @@ endif
 #
 # Experimental features must default to disabled, e.g.:
 # MALI_EXPERIMENTAL_FEATURE ?= 0
-MALI_INCREMENTAL_RENDERING ?= 0
 
 #
 # ccflags
 #
 ccflags-y += \
     -DMALI_CUSTOMER_RELEASE=$(MALI_CUSTOMER_RELEASE) \
-    -DMALI_USE_CSF=$(MALI_USE_CSF) \
     -DMALI_KERNEL_TEST_API=$(MALI_KERNEL_TEST_API) \
     -DMALI_UNIT_TEST=$(MALI_UNIT_TEST) \
     -DMALI_COVERAGE=$(MALI_COVERAGE) \
     -DMALI_RELEASE_NAME=$(MALI_RELEASE_NAME) \
     -DMALI_JIT_PRESSURE_LIMIT_BASE=$(MALI_JIT_PRESSURE_LIMIT_BASE) \
-    -DMALI_INCREMENTAL_RENDERING=$(MALI_INCREMENTAL_RENDERING) \
     -DMALI_KBASE_BUILD \
 #    -DMALI_PLATFORM_DIR=$(MALI_PLATFORM_DIR)
-
 
 ifeq ($(KBUILD_EXTMOD),)
 # in-tree
@@ -264,10 +350,22 @@ endif
 ccflags-y += \
     -I$(srctree)/include/linux \
     -I$(srctree)/drivers/staging/android \
+    -I$(srctree)/drivers/misc/mediatek/trusted_mem/public \
+    -I$(srctree)/drivers/dma-buf/heaps \
     -I$(KO_CODE_PATH) \
     -I$(KO_CODE_PATH)/platform/$(MALI_PLATFORM_DIR) \
     -I$(KO_CODE_PATH)/../../../base \
     -I$(KO_CODE_PATH)/../../../../include
+ifeq ($(CONFIG_MALI_MTK_SLC_ALL_CACHE_MODE), y)
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/slbc
+endif
+ifeq ($(CONFIG_MALI_MTK_SLC_DYNAMIC_POLICY_V2), y)
+ccflags-y += -I$(srctree)/drivers/gpu/mediatek/gpu_pdma/include
+endif
+
+# xaga: the r54 platform layer carries counters that are only consumed by
+# debugfs paths disabled in this build; keep -Werror otherwise intact.
+ccflags-y += -Wno-unused-but-set-variable -Wno-unused-variable
 
 subdir-ccflags-y += $(ccflags-y)
 
@@ -277,94 +375,77 @@ subdir-ccflags-y += $(ccflags-y)
 #obj-$(CONFIG_MALI_MIDGARD) += mali_kbase.o
 
 # MTK: Tell the Linux build system from which .o file to create the kernel module
-# LD1.0
-obj-$(CONFIG_MALI_MIDGARD) += mali_kbase_$(MTK_PLATFORM).o
-# mali_kbase_$(MTK_PLATFORM)-y is assigned from $(mali_kbase-y) at end of Makefile
-
-ifeq ($(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM), y)
-    include $(srctree)/drivers/misc/mediatek/trusted_mem/Makefile.include
-    ccflags-y += -I$(srctree)/drivers/staging/android/ion
+UNQUOTE_CONFIG_MTK_GPU_VERSION = $(subst ",,$(CONFIG_MTK_GPU_VERSION))
+ifneq ($(UNQUOTE_CONFIG_MTK_GPU_VERSION),)
+    # LD1.0
+    obj-$(CONFIG_MALI_MIDGARD) += mali_kbase.o
+else ifneq ($(wildcard $(KO_CODE_PATH)/platform/$(MTK_PLATFORM)),)
+    # LD2.0
+    obj-$(CONFIG_MALI_MIDGARD) += mali_kbase_$(MTK_PLATFORM).o
+    mali_kbase_$(MTK_PLATFORM)-y += $(mali_kbase-y) $(mali_kbase-m)
 endif
 
-obj-$(CONFIG_MALI_ARBITRATION) += arbitration/
+obj-$(CONFIG_MALI_HAS_VIRTUALIZATION) += arbitration/
 obj-$(CONFIG_MALI_KUTF)    += tests/
 
 mali_kbase-y += \
     mali_kbase_cache_policy.o \
     mali_kbase_ccswe.o \
     mali_kbase_mem.o \
+    mali_kbase_reg_track.o \
+    mali_kbase_mem_migrate.o \
     mali_kbase_mem_pool_group.o \
     mali_kbase_native_mgm.o \
     mali_kbase_ctx_sched.o \
     mali_kbase_gpuprops.o \
     mali_kbase_pm.o \
     mali_kbase_config.o \
-    mali_kbase_vinstr.o \
-    mali_kbase_hwcnt.o \
-    mali_kbase_hwcnt_gpu.o \
-    mali_kbase_hwcnt_legacy.o \
-    mali_kbase_hwcnt_types.o \
-    mali_kbase_hwcnt_virtualizer.o \
+    mali_kbase_kinstr_prfcnt.o \
     mali_kbase_softjobs.o \
     mali_kbase_hw.o \
     mali_kbase_debug.o \
+    mali_kbase_gpu_memory_debugfs.o \
+    mali_kbase_gator_api.o \
     mali_kbase_mem_linux.o \
     mali_kbase_core_linux.o \
+    mali_kbase_mem_profile_debugfs.o \
     mali_kbase_disjoint_events.o \
     mali_kbase_debug_mem_view.o \
-    mali_kbase_gator_api.o \
+    mali_kbase_debug_mem_zones.o \
+    mali_kbase_debug_mem_allocs.o \
     mali_kbase_smc.o \
     mali_kbase_mem_pool.o \
-    mali_kbase_strings.o \
+    mali_kbase_mem_pool_debugfs.o \
+    mali_kbase_debugfs_helper.o \
+    mali_kbase_as_fault_debugfs.o \
+    mali_kbase_dvfs_debugfs.o \
     mali_power_gpu_frequency_trace.o \
-    mali_kbase_trace_gpu_mem.o
+    mali_kbase_trace_gpu_mem.o \
+    mali_kbase_pbha.o \
+    mali_kbase_io.o
 
-mali_kbase-$(CONFIG_MALI_CINSTR_GWT) += mali_kbase_gwt.o
-
-mali_kbase-$(CONFIG_SYNC) += \
-    mali_kbase_sync_android.o \
-    mali_kbase_sync_common.o
+mali_kbase-$(CONFIG_DEBUG_FS) += mali_kbase_pbha_debugfs.o
 
 mali_kbase-$(CONFIG_SYNC_FILE) += \
     mali_kbase_fence_ops.o \
     mali_kbase_sync_file.o \
     mali_kbase_sync_common.o
 
-ifeq ($(CONFIG_MALI_CSF_SUPPORT),y)
-    mali_kbase-y += \
-        mali_kbase_hwcnt_backend_csf.o \
-        mali_kbase_hwcnt_backend_csf_if_fw.o
-else
-    mali_kbase-y += \
-        mali_kbase_jm.o \
-        mali_kbase_hwcnt_backend_jm.o \
-        mali_kbase_dummy_job_wa.o \
-        mali_kbase_debug_job_fault.o \
-        mali_kbase_event.o \
-        mali_kbase_jd.o \
-        mali_kbase_js.o \
-        mali_kbase_js_ctx_attr.o \
-        mali_kbase_kinstr_jm.o
-
-    mali_kbase-$(CONFIG_MALI_DMA_FENCE) += \
-        mali_kbase_fence_ops.o \
-        mali_kbase_dma_fence.o \
-        mali_kbase_fence.o
-
-    mali_kbase-$(CONFIG_SYNC_FILE) += \
-        mali_kbase_fence_ops.o \
-        mali_kbase_fence.o
-endif
-
+mali_kbase-$(CONFIG_MALI_TRACE_POWER_GPU_WORK_PERIOD) += \
+        mali_power_gpu_work_period_trace.o \
+        mali_kbase_gpu_metrics.o
 
 INCLUDE_SUBDIR = \
+    $(KO_CODE_PATH)/arbiter/Kbuild \
     $(KO_CODE_PATH)/context/Kbuild \
     $(KO_CODE_PATH)/debug/Kbuild \
     $(KO_CODE_PATH)/device/Kbuild \
     $(KO_CODE_PATH)/backend/gpu/Kbuild \
     $(KO_CODE_PATH)/mmu/Kbuild \
     $(KO_CODE_PATH)/tl/Kbuild \
+    $(KO_CODE_PATH)/hwcnt/Kbuild \
     $(KO_CODE_PATH)/gpu/Kbuild \
+    $(KO_CODE_PATH)/hw_access/Kbuild \
     $(KO_CODE_PATH)/thirdparty/Kbuild \
 #    $(KO_CODE_PATH)/platform/$(MALI_PLATFORM_DIR)/Kbuild
 
@@ -372,9 +453,6 @@ ifeq ($(CONFIG_MALI_CSF_SUPPORT),y)
     INCLUDE_SUBDIR += $(KO_CODE_PATH)/csf/Kbuild
 endif
 
-ifeq ($(CONFIG_MALI_ARBITER_SUPPORT),y)
-    INCLUDE_SUBDIR += $(KO_CODE_PATH)/arbiter/Kbuild
-endif
 
 ifeq ($(CONFIG_MALI_DEVFREQ),y)
     ifeq ($(CONFIG_DEVFREQ_THERMAL),y)
@@ -389,5 +467,3 @@ else
 # out-of-tree
     include $(INCLUDE_SUBDIR)
 endif
-
-mali_kbase_$(MTK_PLATFORM)-y := $(mali_kbase-y)

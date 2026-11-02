@@ -1576,7 +1576,6 @@ EXPORT_SYMBOL(cmdq_pkt_destroy);
 
 size_t cmdq_pkt_get_curr_offset(struct cmdq_pkt *pkt)
 {
-	pkt->write_addr_high = 0;
 	return pkt->cmd_buf_size - CMDQ_INST_SIZE;
 }
 EXPORT_SYMBOL(cmdq_pkt_get_curr_offset);
@@ -2712,6 +2711,9 @@ s32 cmdq_pkt_sleep_reuse(struct cmdq_pkt *pkt, u32 tick, u16 reg_gpr,
 		tpr_en = 1 << reg_gpr;
 		event = (u16)CMDQ_EVENT_GPR_TIMER + reg_gpr;
 	}
+
+	pr_info("xaga: cmdq_pkt_sleep tick=%u gpr=%u event=%u tpr_en=0x%x caller=%pS\n",
+		tick, reg_gpr, event, tpr_en, __builtin_return_address(0));
 
 	pkt->write_addr_high = 0;
 	/* set target gpr value to max to avoid event trigger

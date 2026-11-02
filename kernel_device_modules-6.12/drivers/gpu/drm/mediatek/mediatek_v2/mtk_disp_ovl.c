@@ -1223,7 +1223,7 @@ static void mtk_ovl_all_layer_off(struct mtk_ddp_comp *comp,
 	struct cmdq_pkt *handle, int keep_first_layer)
 {
 	int i;
-	unsigned int phy_layer0_on = 0;
+	unsigned int layer_mask = 0;
 
 	/* In 6779 we need to set DISP_OVL_FORCE_RELAY_MODE */
 
@@ -1231,11 +1231,34 @@ static void mtk_ovl_all_layer_off(struct mtk_ddp_comp *comp,
 	 * as readl while writing the new value in GCE. This function should
 	 * only used in driver probe.
 	 */
-	if (keep_first_layer)
-		phy_layer0_on = readl(comp->regs + DISP_REG_OVL_SRC_CON) & 0x1;
-	if (phy_layer0_on)
+	/* xaga: keep the bootloader layer alive for as long as the LK
+	 * framebuffer is mapped.  priv->fb_info.fb_gem is cleared by
+	 * mtk_crtc_frame_buffer_release() once the first real (SurfaceFlinger)
+	 * frame has been latched, which is exactly when the logo must go away
+	 * and the normal per-plane programming takes over.
+	 */
+	if (keep_first_layer ||
+	    (comp->mtk_crtc && comp->mtk_crtc->base.dev &&
+	     drm_crtc_index(&comp->mtk_crtc->base) == 0 &&
+	     ((struct mtk_drm_private *)comp->mtk_crtc->base.dev->dev_private)
+			->fb_info.fb_gem))
+		layer_mask = readl(comp->regs + DISP_REG_OVL_SRC_CON) & 0xf;
+
+	if (layer_mask)
+		/* xaga: MT6895 boards may leave the bootloader logo on any
+		 * layer (this device uses L1, SRC_CON = 0x2), so preserve the
+		 * whole layer-enable mask instead of only bit 0.
+		 */
 		cmdq_pkt_write(handle, comp->cmdq_base,
-			       comp->regs_pa + DISP_REG_OVL_SRC_CON, 0x1, ~0);
+			       comp->regs_pa + DISP_REG_OVL_SRC_CON,
+			       layer_mask, ~0);
+	else if (comp->mtk_crtc &&
+		 drm_crtc_index(&comp->mtk_crtc->base) == 0)
+		/* xaga: no bootloader layer here; stay out of FORCE_RELAY so the
+		 * layer configuration can enable a real layer later.
+		 */
+		cmdq_pkt_write(handle, comp->cmdq_base,
+			       comp->regs_pa + DISP_REG_OVL_SRC_CON, 0x0, ~0);
 	else
 		cmdq_pkt_write(handle, comp->cmdq_base,
 			       comp->regs_pa + DISP_REG_OVL_SRC_CON,
@@ -1244,10 +1267,16 @@ static void mtk_ovl_all_layer_off(struct mtk_ddp_comp *comp,
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		       comp->regs_pa + DISP_REG_OVL_DATAPATH_EXT_CON, 0, ~0);
 
-	for (i = phy_layer0_on ? 1 : 0; i < OVL_PHY_LAYER_NR; i++)
+	for (i = 0; i < OVL_PHY_LAYER_NR; i++) {
+		/* xaga: never clear the RDMA_CTRL of a layer the bootloader
+		 * already enabled, that removes the layer's data source.
+		 */
+		if (layer_mask & BIT(i))
+			continue;
 		cmdq_pkt_write(handle, comp->cmdq_base,
 			       comp->regs_pa + DISP_REG_OVL_RDMA_CTRL(i), 0,
 			       ~0);
+	}
 }
 
 static void mtk_ovl_start(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle)
@@ -1408,6 +1437,12 @@ static void mtk_ovl_config(struct mtk_ddp_comp *comp,
 	else
 		height = ovl->roi_height;
 
+	if (drm_crtc_index(crtc) == 0)
+		dev_info(comp->dev,
+			 "xaga: ovl width cfg=%ux%u dual_pipe=%d roi=%ux%u comp=%d\n",
+			 cfg->w, cfg->h, comp->mtk_crtc->is_dual_pipe,
+			 width, height, comp->id);
+
 	if (cfg->w != 0 && cfg->h != 0) {
 		cmdq_pkt_write(handle, comp->cmdq_base,
 				   comp->regs_pa + DISP_REG_OVL_ROI_SIZE,
@@ -1477,9 +1512,12 @@ static void mtk_ovl_layer_on(struct mtk_ddp_comp *comp, unsigned int idx,
 
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		       comp->regs_pa + DISP_REG_OVL_RDMA_CTRL(idx), 0x1, ~0);
+	/* xaga: also clear FORCE_RELAY, otherwise mtk_ovl_start() leaves OVL in
+	 * bypass and the layer we just enabled is never scanned out.
+	 */
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		       comp->regs_pa + DISP_REG_OVL_SRC_CON, BIT(idx),
-		       BIT(idx));
+		       BIT(idx) | DISP_OVL_FORCE_RELAY_MODE);
 }
 
 static void mtk_ovl_layer_off(struct mtk_ddp_comp *comp, unsigned int idx,

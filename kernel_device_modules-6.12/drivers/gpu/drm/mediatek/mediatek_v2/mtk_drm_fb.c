@@ -23,6 +23,11 @@
  */
 struct mtk_drm_fb {
 	struct drm_framebuffer base;
+	/* xaga: MIUI/HyperOS HWC tags the 0x0a.. modifier to mean "premultiplied
+	 * blend", not a memory layout. Keep it private so KMS core accepts the
+	 * buffer as linear instead of rejecting the atomic commit.
+	 */
+	u64 legacy_blend_modifier;
 	/* For now we only support a single plane */
 	struct drm_gem_object *gem_obj;
 };
@@ -97,6 +102,36 @@ int mtk_fb_get_sec_id(struct drm_framebuffer *fb)
 }
 EXPORT_SYMBOL_GPL(mtk_fb_get_sec_id);
 
+
+u64 mtk_fb_get_modifier(struct drm_framebuffer *fb)
+{
+	struct mtk_drm_fb *mtk_fb = to_mtk_fb(fb);
+
+	return mtk_fb->legacy_blend_modifier ? : fb->modifier;
+}
+EXPORT_SYMBOL_GPL(mtk_fb_get_modifier);
+
+/* xaga: legacy RGB blend hint (0x0a0000000000000X), only for RGB formats */
+static bool xaga_fb_has_legacy_blend_hint(const struct drm_mode_fb_cmd2 *mode)
+{
+	if ((mode->modifier[0] & ~1ULL) != 0x0a00000000000000ULL)
+		return false;
+	switch (mode->pixel_format) {
+	case DRM_FORMAT_XRGB8888:
+	case DRM_FORMAT_XBGR8888:
+	case DRM_FORMAT_ARGB8888:
+	case DRM_FORMAT_ABGR8888:
+	case DRM_FORMAT_RGBX8888:
+	case DRM_FORMAT_BGRX8888:
+	case DRM_FORMAT_RGBA8888:
+	case DRM_FORMAT_BGRA8888:
+	case DRM_FORMAT_ABGR2101010:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static int mtk_drm_fb_create_handle(struct drm_framebuffer *fb,
 				    struct drm_file *file_priv,
 				    unsigned int *handle)
@@ -127,7 +162,16 @@ mtk_drm_framebuffer_init(struct drm_device *dev,
 			 struct drm_gem_object *obj)
 {
 	struct mtk_drm_fb *mtk_fb;
+	struct drm_mode_fb_cmd2 linear_mode;
 	int ret;
+
+	if (xaga_fb_has_legacy_blend_hint(mode)) {
+		dev_info_once(dev->dev,
+			      "xaga: legacy RGB blend hint kept private, KMS layout linear\n");
+		linear_mode = *mode;
+		linear_mode.modifier[0] = DRM_FORMAT_MOD_LINEAR;
+		mode = &linear_mode;
+	}
 
 	mtk_fb = kzalloc(sizeof(*mtk_fb), GFP_KERNEL);
 	if (!mtk_fb)

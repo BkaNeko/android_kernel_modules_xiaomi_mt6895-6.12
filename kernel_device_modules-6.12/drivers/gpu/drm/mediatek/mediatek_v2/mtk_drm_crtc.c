@@ -38,6 +38,16 @@
 
 #include "mtk_drm_arr.h"
 #include "mtk_drm_drv.h"
+
+/* xaga: the vendor HWC also enumerates the always-"connected" writeback
+ * connector even though nothing ever submits writeback jobs; skip creating
+ * it so HWC only sees the DSI display.
+ */
+static bool xaga_no_writeback = true;
+module_param(xaga_no_writeback, bool, 0644);
+MODULE_PARM_DESC(xaga_no_writeback, "Skip mediatek DRM writeback connector");
+
+
 #include "mtk_drm_crtc.h"
 #include "mtk_drm_ddp.h"
 #include "mtk_drm_ddp_comp.h"
@@ -48,6 +58,16 @@
 #include "mtk_sync.h"
 #include "mtk_drm_session.h"
 #include "mtk_dump.h"
+
+void xaga_dump_disp(const char *stage);
+
+/* xaga: the first-config packet must not wait for DSI0 FRAME_DONE when the
+ * bootloader never started the DSI stream; the wait deadlocks the GCE and no
+ * frame is ever scanned out.
+ */
+static bool xaga_skip_first_wfe = true;
+module_param(xaga_skip_first_wfe, bool, 0644);
+MODULE_PARM_DESC(xaga_skip_first_wfe, "Skip the first-config FRAME_DONE WFE");
 #include "mtk_drm_fb.h"
 #include "mtk_rect.h"
 #include "mtk_drm_ddp_addon.h"
@@ -65,6 +85,9 @@
 #include "mtk_disp_oddmr/mtk_disp_oddmr.h"
 #include "platform/mtk_drm_platform.h"
 #include "mtk_disp_vidle.h"
+
+/* xaga: mtk_drm_crtc_init_para() must run exactly once per CRTC */
+static bool xaga_para_inited[MAX_CRTC];
 #include "mtk_disp_ovl.h"
 #include "mtk_disp_spr.h"
 #include "mtk_dsi_lpc.h"
@@ -153,6 +176,8 @@ static struct mtk_drm_property mtk_crtc_property[CRTC_PROP_MAX] = {
 	{DRM_MODE_PROP_ATOMIC, "DBI_COUNT_BLOCK_H", 0, ULONG_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "DBI_COUNT_BLOCK_V", 0, ULONG_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "DBI_COUNT_FENCE_IDX", 0, ULONG_MAX, 0},
+	/* xaga: legacy HWC property discovery; only the disabled value 0 is valid */
+	{DRM_MODE_PROP_ATOMIC, "SKIP_CONFIG", 0, 0, 0},
 };
 
 static struct cmdq_pkt *sb_cmdq_handle;
@@ -8681,7 +8706,12 @@ void mtk_crtc_ovl_connect_change(struct drm_crtc *crtc, unsigned int ovl_res,
 	output_comp = mtk_ddp_comp_request_output(mtk_crtc);
 	is_frame_mode = mtk_crtc_is_frame_trigger_mode(crtc);
 
-	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0) {
+	/* xaga: MT6895 keeps its OVLs inside path[] (there is no separate
+	 * ovl_path table), so ovl_comp_nr is legitimately 0.  Only bail out when
+	 * the path itself is empty, otherwise HRT configuration is skipped.
+	 */
+	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0 &&
+	    mtk_crtc->ddp_ctx[ddp_mode].ddp_comp_nr[DDP_FIRST_PATH] == 0) {
 		DDPINFO("%s no valid ovl_comp\n", __func__);
 		return;
 	}
@@ -8820,7 +8850,8 @@ void mtk_crtc_ovl_connect_change(struct drm_crtc *crtc, unsigned int ovl_res,
 	if (!mtk_crtc->is_dual_pipe)
 		return;
 
-	if (mtk_crtc->dual_pipe_ddp_ctx.ovl_comp_nr[DDP_FIRST_PATH] == 0) {
+	if (mtk_crtc->dual_pipe_ddp_ctx.ovl_comp_nr[DDP_FIRST_PATH] == 0 &&
+	    mtk_crtc->dual_pipe_ddp_ctx.ddp_comp_nr[DDP_FIRST_PATH] == 0) {
 		DDPINFO("%s no valid dual ovl_comp\n", __func__);
 		return;
 	}
@@ -9555,6 +9586,13 @@ static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 		return;
 	}
 
+	dev_info(crtc->dev->dev,
+		 "xaga: cmdq timeout state enabled=%d mutex0=%d ovl_nr0=%d ovl_nr_path=%d\n",
+			 mtk_crtc->enabled,
+			 mtk_crtc->mutex[0] ? mtk_crtc->mutex[0]->claimed : -1,
+			 mtk_crtc->ddp_ctx[DDP_MAJOR].ovl_comp_nr[0],
+			 mtk_crtc->ddp_ctx[DDP_MAJOR].ovl_comp_nr[1]);
+
 	if (mtk_crtc->base.dev && mtk_crtc->base.dev->dev_private)
 		priv = mtk_crtc->base.dev->dev_private;
 	else if (!priv) {
@@ -9564,6 +9602,31 @@ static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 	}
 
 	id = drm_crtc_index(crtc);
+
+	{
+		static int xaga_raw_cnt;
+		struct mtk_ddp_comp *rc;
+		struct mtk_ddp_comp *oc;
+
+		if (xaga_raw_cnt < 3) {
+			rc = priv->ddp_comp[DDP_COMPONENT_RDMA0];
+			oc = priv->ddp_comp[DDP_COMPONENT_OVL0];
+			if (rc && rc->regs) {
+				xaga_raw_cnt++;
+				dev_info(crtc->dev->dev,
+					 "xaga: RDMA0 CON=0x%x MEM_CON=0x%x ADDR=0x%x PITCH=0x%x\n",
+					 readl(rc->regs + 0x10), readl(rc->regs + 0x24),
+					 readl(rc->regs + 0x0f00), readl(rc->regs + 0x2c));
+				if (oc && oc->regs)
+					dev_info(crtc->dev->dev,
+						 "xaga: OVL0 STA=0x%x EN=0x%x SRC_CON=0x%x ROI=0x%x L0SIZE=0x%x L0PITCH=0x%x L0ADDR=0x%x\n",
+						 readl(oc->regs + 0x00), readl(oc->regs + 0x0c),
+						 readl(oc->regs + 0x2c), readl(oc->regs + 0x20),
+						 readl(oc->regs + 0x38), readl(oc->regs + 0x44),
+						 readl(oc->regs + 0x0f40));
+			}
+		}
+	}
 
 	mtk_dprec_snapshot();
 
@@ -9577,6 +9640,12 @@ static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 
 	mtk_drm_crtc_analysis(crtc);
 	mtk_drm_crtc_dump(crtc);
+	xaga_dump_disp("cmdq timeout");
+	dev_info(crtc->dev->dev, "xaga: dump rdma/ovl state\n");
+	if (priv->ddp_comp[DDP_COMPONENT_RDMA0])
+		mtk_rdma_dump(priv->ddp_comp[DDP_COMPONENT_RDMA0]);
+	if (priv->ddp_comp[DDP_COMPONENT_OVL0])
+		mtk_ovl_dump(priv->ddp_comp[DDP_COMPONENT_OVL0]);
 
 	if (mtk_crtc_is_frame_trigger_mode(crtc) &&
 		(id == 0) && (flush_add_delay_need == true) &&
@@ -11940,8 +12009,15 @@ static void mtk_crtc_ddp_config(struct drm_crtc *crtc)
 		return;
 	}
 	ovl_is_busy = readl(comp->regs) & 0x1UL;
-	if (ovl_is_busy == 0x1UL)
+	if (ovl_is_busy == 0x1UL) {
+		static DEFINE_RATELIMIT_STATE(xaga_ddp_rate, 2 * HZ, 1);
+
+		if (__ratelimit(&xaga_ddp_rate))
+			dev_info(crtc->dev->dev,
+				 "xaga: ddp_config gate STA=0x%x busy=1 pending_planes=%d\n",
+				 readl(comp->regs), mtk_crtc->pending_planes);
 		return;
+	}
 
 	if ((state->pending_config) == true) {
 		cfg.w = state->pending_width;
@@ -11964,8 +12040,15 @@ static void mtk_crtc_ddp_config(struct drm_crtc *crtc)
 		state->pending_config = false;
 	}
 
-	if ((mtk_crtc->pending_planes) == false)
+	if ((mtk_crtc->pending_planes) == false) {
+		static DEFINE_RATELIMIT_STATE(xaga_pp_rate, 2 * HZ, 1);
+
+		if (__ratelimit(&xaga_pp_rate))
+			dev_info(crtc->dev->dev,
+				 "xaga: ddp_config gate pending_planes=0 (STA=0x%x)\n",
+				 comp && comp->regs ? readl(comp->regs) : 0);
 		return;
+	}
 
 #ifdef DRM_CMDQ_DISABLE
 	mtk_wb_atomic_commit(mtk_crtc);
@@ -12030,7 +12113,11 @@ static void mtk_crtc_comp_trigger(struct mtk_drm_crtc *mtk_crtc,
 
 	/* get DSC comp from path data */
 	comp = mtk_ddp_get_path_addon_dsc_comp(mtk_crtc);
-	mtk_ddp_comp_config_trigger(comp, cmdq_handle, trig_flag);
+	/* xaga: MT6895 keeps DSC out of the path tables, so this lookup can
+	 * return NULL; triggering a NULL comp oopses.
+	 */
+	if (comp)
+		mtk_ddp_comp_config_trigger(comp, cmdq_handle, trig_flag);
 }
 
 int mtk_crtc_comp_is_busy(struct mtk_drm_crtc *mtk_crtc)
@@ -13226,7 +13313,8 @@ skip_prete:
 				output_comp->regs_pa + 0x0C, slot_addr, CMDQ_THR_SPR_IDX3);
 		}
 
-		GCE_DO(wfe, EVENT_CMD_EOF);
+		if (!xaga_skip_first_wfe)
+			GCE_DO(wfe, EVENT_CMD_EOF);
 
 		/* For dbgtp fifo mon WA */
 		if ((priv->data->mmsys_id == MMSYS_MT6993) &&
@@ -15858,6 +15946,17 @@ void mtk_crtc_prepare_instr(struct drm_crtc *crtc)
 int mtk_drm_crtc_usage_enable(struct mtk_drm_private *priv,
 			unsigned int crtc_id)
 {
+	/* xaga: the "main display ovl drained" heuristic below reports
+	 * DISP_OPENING whenever the OVL usage mask is non-zero, which leaves
+	 * only_output set and makes mtk_drm_crtc_enable() program nothing but the
+	 * output component.  On this board the bootloader never leaves a usable
+	 * layer behind, so there is nothing to drain: force DISP_ENABLE.
+	 */
+	if (priv && crtc_id == 0 && !priv->fb_info.fb_gem) {
+		DDPINFO("xaga: no bootloader framebuffer taken over, usage=DISP_ENABLE\n");
+		return DISP_ENABLE;
+	}
+
 	unsigned int i, main_disp_idx = 0xFFFFFFFF;
 	unsigned int occupied_ovl = 0;
 
@@ -15915,7 +16014,8 @@ static void mtk_drm_crtc_path_adjust(struct mtk_drm_private *priv, struct drm_cr
 	unsigned int ovl_res, comp_id_nr, ovl_comp_idx, comp_id, *comp_id_list = NULL;
 	unsigned int occupied_ovl = 0;
 
-	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0)
+	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0 &&
+	    mtk_crtc->ddp_ctx[ddp_mode].ddp_comp_nr[DDP_FIRST_PATH] == 0)
 		return;
 
 	/*  find main display index and count occupied_ovl */
@@ -15969,7 +16069,8 @@ static void mtk_drm_crtc_path_adjust(struct mtk_drm_private *priv, struct drm_cr
 
 	mtk_crtc->ovl_usage_status = ovl_res;
 
-	if (mtk_crtc->dual_pipe_ddp_ctx.ovl_comp_nr[DDP_FIRST_PATH] == 0)
+	if (mtk_crtc->dual_pipe_ddp_ctx.ovl_comp_nr[DDP_FIRST_PATH] == 0 &&
+	    mtk_crtc->dual_pipe_ddp_ctx.ddp_comp_nr[DDP_FIRST_PATH] == 0)
 		return;
 
 	/* adjust dual pipe path */
@@ -16065,6 +16166,32 @@ void mtk_drm_crtc_enable(struct drm_crtc *crtc, bool need_report_bw)
 	if (!priv) {
 		DDPPR_ERR("%s, priv is NULL\n", __func__);
 		return;
+	}
+
+	/* xaga: mtk_drm_crtc_first_enable() is bypassed when the bootloader did
+	 * not program the pipe, but it is the only caller of
+	 * mtk_drm_crtc_init_para(), which fills adjusted_mode from the DSI
+	 * timing and attaches the DDP components.  Run it here instead.
+	 */
+	if (!xaga_para_inited[crtc_id])
+		mtk_drm_crtc_init_para(crtc);
+
+	/* xaga: while priv->usage[] is DISP_OPENING the vendor HWC hand-off
+	 * state makes us configure only the output component -- OVL, RDMA, DSC
+	 * and the mutex are all skipped, so nothing is ever scanned out.  That
+	 * assumes the bootloader already programmed the pipe (true on 5.10).
+	 * Detect the unconfigured case and promote the crtc to DISP_ENABLE.
+	 */
+	if (crtc_id == 0 && priv->fb_info.fb_gem) {
+		struct mtk_ddp_comp *xaga_ovl =
+			priv->ddp_comp[DDP_COMPONENT_OVL0];
+
+		if (xaga_ovl && !(readl(xaga_ovl->regs + 0x002c) & 0x1) &&
+		    priv->usage[crtc_id] == DISP_OPENING) {
+			dev_info(crtc->dev->dev,
+				 "xaga: bootloader left OVL unconfigured, forcing DISP_ENABLE\n");
+			priv->usage[crtc_id] = DISP_ENABLE;
+		}
 	}
 
 	CRTC_MMP_EVENT_START((int) crtc_id, enable,
@@ -16885,6 +17012,8 @@ void mtk_drm_crtc_init_para(struct drm_crtc *crtc)
 	if (comp == NULL)
 		return;
 
+	xaga_para_inited[crtc_id] = true;
+
 	mtk_ddp_comp_io_cmd(comp, NULL, DSI_FILL_MODE_BY_CONNETOR, NULL);
 	mtk_ddp_comp_io_cmd(comp, NULL, DSI_GET_TIMING, &timing);
 	if (timing == NULL) {
@@ -17179,8 +17308,15 @@ void mtk_crtc_first_enable_ddp_config(struct mtk_drm_crtc *mtk_crtc)
 	cmdq_pkt_clear_event(cmdq_handle,
 			     mtk_crtc->gce_obj.event[EVENT_VDO_EOF]);
 
+	/* xaga: deliberately do NOT wait for FRAME_DONE here.  mt6895-mainline
+	 * can, because its bootloader already runs the pipe; ours does not, and
+	 * the mutex is only armed after this packet is flushed, so waiting would
+	 * deadlock the GCE.
+	 */
+
 	/*1. Show LK logo only */
 	mtk_crtc_all_layer_off(mtk_crtc, cmdq_handle);
+
 
 	/*2. Load Round Corner */
 	mtk_crtc_load_round_corner_pattern(&mtk_crtc->base, cmdq_handle);
@@ -17329,8 +17465,11 @@ void mtk_crtc_first_enable_ddp_config(struct mtk_drm_crtc *mtk_crtc)
 			readl(output_comp->regs + 0x400));
 	}
 
+	xaga_dump_disp("before first-config flush");
 	cmdq_pkt_flush(cmdq_handle);
 	cmdq_pkt_destroy(cmdq_handle);
+	xaga_dump_disp("after first-config flush");
+
 
 	if (mtk_crtc_is_frame_trigger_mode(&mtk_crtc->base)) {
 		CRTC_MMP_MARK(0, set_dirty, FIRST_ENABLE_DDP_CONFIG, __LINE__);
@@ -17373,6 +17512,24 @@ void mtk_drm_crtc_first_enable(struct drm_crtc *crtc)
 	struct mtk_ddp_comp *comp;
 
 	mtk_drm_crtc_init_para(crtc);
+
+	/* xaga: snapshot what the bootloader left behind, before we touch anything */
+	{
+		struct mtk_ddp_comp *rc = priv->ddp_comp[DDP_COMPONENT_RDMA0];
+		struct mtk_ddp_comp *oc = priv->ddp_comp[DDP_COMPONENT_OVL0];
+
+		if (oc && oc->regs)
+			dev_info(crtc->dev->dev,
+				 "xaga: LK state before config OVL0 EN=0x%x SRC_CON=0x%x ROI=0x%x L0SIZE=0x%x L0PITCH=0x%x L0ADDR=0x%x\n",
+				 readl(oc->regs + 0x0c), readl(oc->regs + 0x2c),
+				 readl(oc->regs + 0x20), readl(oc->regs + 0x38),
+				 readl(oc->regs + 0x44), readl(oc->regs + 0x0f40));
+		if (rc && rc->regs)
+			dev_info(crtc->dev->dev,
+				 "xaga: LK state before config RDMA0 CON=0x%x MEM_CON=0x%x ADDR=0x%x PITCH=0x%x\n",
+				 readl(rc->regs + 0x10), readl(rc->regs + 0x24),
+				 readl(rc->regs + 0x0f00), readl(rc->regs + 0x2c));
+	}
 
 	if (mtk_crtc->enabled) {
 		DDPINFO("crtc%d skip %s\n", crtc_id, __func__);
@@ -17452,6 +17609,21 @@ void mtk_drm_crtc_first_enable(struct drm_crtc *crtc)
 		MTK_DRM_OPT_MMQOS_SUPPORT))
 		mtk_drm_pan_disp_set_hrt_bw(crtc, __func__);
 
+	/* xaga: 5.10 started the trigger loop before the first config packet to
+	 * keep the GCE alive.  The 6.12 ordering assumes the bootloader already
+	 * configured the data path, which is not true here.
+	 */
+	if (mtk_crtc_with_trigger_loop(crtc)) {
+		if (mtk_crtc_with_sodi_loop(crtc) &&
+			(!mtk_crtc_is_frame_trigger_mode(crtc)))
+			mtk_crtc_start_sodi_loop(crtc);
+
+		if (mtk_crtc_with_event_loop(crtc))
+			mtk_crtc_start_event_loop(crtc);
+
+		mtk_crtc_start_trig_loop(crtc);
+	}
+
 	/* 3. Register configuration */
 	mtk_crtc_first_enable_ddp_config(mtk_crtc);
 
@@ -17467,18 +17639,6 @@ void mtk_drm_crtc_first_enable(struct drm_crtc *crtc)
 		}
 		if (priv->data->wla_config)
 			priv->data->wla_config(crtc->dev, NULL);
-	}
-
-	/* 2. start trigger loop after the data path and DSI are ready */
-	if (mtk_crtc_with_trigger_loop(crtc)) {
-		if (mtk_crtc_with_sodi_loop(crtc) &&
-			(!mtk_crtc_is_frame_trigger_mode(crtc)))
-			mtk_crtc_start_sodi_loop(crtc);
-
-		if (mtk_crtc_with_event_loop(crtc))
-			mtk_crtc_start_event_loop(crtc);
-
-		mtk_crtc_start_trig_loop(crtc);
 	}
 
 	mtk_crtc_vdisp_ao_config(crtc);
@@ -22455,6 +22615,16 @@ static void mtk_drm_crtc_atomic_flush(struct drm_crtc *crtc,
 		mtk_disp_mutex_acquire(mtk_crtc->mutex[0]);
 		mtk_crtc_ddp_config(crtc);
 		mtk_disp_mutex_release(mtk_crtc->mutex[0]);
+	} else if (index == 0 && mtk_crtc->pending_planes) {
+		/* xaga: MT6895 has shadow_register == false, so the pending planes
+		 * are normally only programmed from the DPP frame-done IRQ.  With a
+		 * pipe that we brought up ourselves that IRQ never arrives, so the
+		 * SurfaceFlinger layers are dropped and the bootloader logo stays on
+		 * screen forever.  Program them here as well.
+		 */
+		mtk_disp_mutex_acquire(mtk_crtc->mutex[0]);
+		mtk_crtc_ddp_config(crtc);
+		mtk_disp_mutex_release(mtk_crtc->mutex[0]);
 	}
 
 	/* backup present fence */
@@ -24185,6 +24355,8 @@ int mtk_drm_crtc_create(struct drm_device *drm_dev,
 					      comp_id == DDP_COMPONENT_WDMA1 ||
 					      comp_id == DDP_COMPONENT_OVLSYS_WDMA0 ||
 					      comp_id == DDP_COMPONENT_OVLSYS_WDMA2)) {
+			if (xaga_no_writeback)
+				goto skip_wb_init;
 			ret = mtk_wb_connector_init(drm_dev, mtk_crtc);
 			if (ret != 0)
 				return ret;
@@ -24194,6 +24366,7 @@ int mtk_drm_crtc_create(struct drm_device *drm_dev,
 			if (ret != 0)
 				return ret;
 		}
+skip_wb_init:
 
 		if ((j == 0) && (p_mode == DDP_MAJOR) &&
 		    (comp_id == DDP_COMPONENT_RDMA0 ||

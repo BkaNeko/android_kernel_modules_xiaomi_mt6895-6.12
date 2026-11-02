@@ -486,6 +486,20 @@ unsigned int data_phy_cycle;
 
 bool skip_clk_prepare;
 
+/* xaga: on this board LK never initialises DSI, so the "stage != NORMAL"
+ * shortcuts leave the DSI engine unstarted and the first commit then waits
+ * forever for CMDQ FRAME_DONE (313).  Force the full init path by default.
+ */
+static bool xaga_force_dsi_reinit = true;
+module_param(xaga_force_dsi_reinit, bool, 0644);
+MODULE_PARM_DESC(xaga_force_dsi_reinit,
+		 "Run the full DSI power-on/init sequence even outside NORMAL stage");
+
+#define XAGA_DSI_STAGE_NORMAL()					\
+	(disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL ||	\
+	 xaga_force_dsi_reinit)
+
+
 static int esd_dbg_idx;
 
 struct mtk_dsi;
@@ -2171,6 +2185,17 @@ static int mtk_dsi_set_data_rate(struct mtk_dsi *dsi)
 		data_rate = data_rate * bdg_rxtx_ratio / 100;
 	mipi_tx_rate = data_rate * 1000000;
 
+	/* xaga: an early init may have run before the panel ext supplied the
+	 * real data rate. When the rate finally arrives, drop the cached
+	 * refcount so the next enable re-runs the full DSI init.
+	 */
+	if (xaga_force_dsi_reinit && !dsi->data_rate && data_rate) {
+		dev_info(dsi->dev,
+			 "xaga: data rate %u arrived, resetting DSI refcount\n",
+			 data_rate);
+		dsi->clk_refcnt = 0;
+	}
+
 	/* Store DSI data rate in MHz */
 	dsi->data_rate = data_rate;
 
@@ -2179,7 +2204,7 @@ static int mtk_dsi_set_data_rate(struct mtk_dsi *dsi)
 
 	DDPDBG("set mipitx's data rate: %lu Hz\n", mipi_tx_rate);
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+	if (XAGA_DSI_STAGE_NORMAL())
 		ret = clk_set_rate(dsi->hs_clk, mipi_tx_rate);
 
 	return ret;
@@ -2211,7 +2236,7 @@ void mtk_dsi_tx_lane_config(struct mtk_dsi *dsi, struct mtk_ddp_comp *comp,
 	enum MIPITX_PHY_LANE_SWAP *swap_base;
 	unsigned int val;
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL && dsi->ext) {
+	if (XAGA_DSI_STAGE_NORMAL() && dsi->ext) {
 		if (dsi->ext->params->is_cphy) {
 			if (dsi->ext->params->lane_swap_en)
 				DDPMSG("%s cphy lane swap need implement\n", __func__);
@@ -2302,7 +2327,7 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 
 	DDPDBG("%s+\n", __func__);
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+	if (XAGA_DSI_STAGE_NORMAL()) {
 		if (++dsi->clk_refcnt != 1)
 			return 0;
 	}
@@ -2320,7 +2345,7 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 		goto err_refcount;
 	}
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+	if (XAGA_DSI_STAGE_NORMAL()) {
 		if (dsi->ext) {
 			if (dsi->ext->params->is_cphy)
 				if (priv->data->mmsys_id == MMSYS_MT6983 ||
@@ -2394,6 +2419,14 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 		}
 	}
 
+	dev_info(dsi->dev,
+		 "xaga: DSI state after poweron stage=%d refcnt=%d dbg6=0x%x dbg7=0x%x dbg8=0x%x dbg9=0x%x\n",
+		 disp_helper_get_stage(), dsi->clk_refcnt,
+		 readl(dsi->regs + DSI_STATE_DBG6(dsi->driver_data)),
+		 readl(dsi->regs + DSI_STATE_DBG7(dsi->driver_data)),
+		 readl(dsi->regs + DSI_STATE_DBG8(dsi->driver_data)),
+		 readl(dsi->regs + DSI_STATE_DBG9(dsi->driver_data)));
+
 	if (priv->data->mmsys_id == MMSYS_MT6991 ||
 		priv->data->mmsys_id == MMSYS_MT6993)
 		mtk_dsi_tx_lane_config(dsi, NULL, NULL);
@@ -2418,15 +2451,15 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	return 0;
 
 err_disable_engine_clk:
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+	if (XAGA_DSI_STAGE_NORMAL())
 		clk_disable_unprepare(dsi->engine_clk);
 err_phy_power_off:
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+	if (XAGA_DSI_STAGE_NORMAL()) {
 		phy_power_off(dsi->phy);
 		pm_runtime_put_sync(dsi->host.dev);
 	}
 err_refcount:
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+	if (XAGA_DSI_STAGE_NORMAL())
 		dsi->clk_refcnt--;
 
 	return ret;
@@ -2543,6 +2576,22 @@ int mtk_dsi_get_virtual_width(struct mtk_dsi *dsi,
 
 	if (!virtual_width)
 		virtual_width = crtc->mode.hdisplay;
+
+	/* xaga: the LCM params handed over by the bootloader describe this panel
+	 * as 540 wide (dual-slice), but the DSC block is programmed for the full
+	 * 1080 (enc_pic_width=1080).  Driving OVL/RDMA at 540 while DSC expects
+	 * 1080 leaves the pipeline starved and nothing is scanned out.  Always
+	 * follow the CRTC mode width.
+	 */
+	if (virtual_width != adjusted_mode.hdisplay) {
+		dev_info(dsi->dev,
+			 "xaga: virtual width overridden %u -> %u\n",
+			 virtual_width, adjusted_mode.hdisplay);
+		virtual_width = adjusted_mode.hdisplay;
+	}
+
+	dev_info(dsi->dev, "xaga: virtual_width=%u hdisplay=%u res_switch=%d\n",
+		 virtual_width, adjusted_mode.hdisplay, mtk_crtc->res_switch);
 	DDPDBG("%s %d\n", __func__, virtual_width);
 
 	return virtual_width;
@@ -3712,6 +3761,20 @@ static void mtk_dsi_start(struct mtk_dsi *dsi)
 {
 	writel(0, dsi->regs + DSI_START);
 	writel(1, dsi->regs + DSI_START);
+	dev_info(dsi->dev,
+		 "xaga: DSI timing vact=0x%x data_rate=%u mode_flags=0x%x vm=%ux%u@%u htotal=%u vtotal=%u\n",
+		 readl(dsi->regs + DSI_VACT_NL(dsi->driver_data)),
+		 dsi->data_rate, dsi->mode_flags,
+		 dsi->vm.hactive, dsi->vm.vactive, dsi->vm.pixelclock,
+		 dsi->vm.hactive + dsi->vm.hfront_porch + dsi->vm.hback_porch + dsi->vm.hsync_len,
+		 dsi->vm.vactive + dsi->vm.vfront_porch + dsi->vm.vback_porch + dsi->vm.vsync_len);
+	dev_info(dsi->dev,
+		 "xaga: DSI started start=0x%x dbg6=0x%x dbg7=0x%x dbg8=0x%x dbg9=0x%x\n",
+		 readl(dsi->regs + DSI_START),
+		 readl(dsi->regs + DSI_STATE_DBG6(dsi->driver_data)),
+		 readl(dsi->regs + DSI_STATE_DBG7(dsi->driver_data)),
+		 readl(dsi->regs + DSI_STATE_DBG8(dsi->driver_data)),
+		 readl(dsi->regs + DSI_STATE_DBG9(dsi->driver_data)));
 }
 
 static void mtk_dsi_vm_start(struct mtk_dsi *dsi)
@@ -3820,6 +3883,9 @@ static void mtk_dsi_cmdq_poll(struct mtk_ddp_comp *comp,
 		DDPPR_ERR("%s no cmdq handle\n", __func__);
 
 	gpr = mtk_get_gpr(comp->mtk_crtc, handle);
+
+	dev_info(comp->dev, "xaga: DSI poll reg=0x%x val=0x%x mask=0x%x caller=%pS\n",
+		 reg, val, mask, __builtin_return_address(0));
 
 	cmdq_pkt_poll_timeout(handle, val, SUBSYS_NO_SUPPORT,
 				  reg, mask, 0xFFFF, gpr);
@@ -4819,7 +4885,7 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	DDPDBG("%s +\n", __func__);
 #ifndef CONFIG_FPGA_EARLY_PORTING
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+	if (XAGA_DSI_STAGE_NORMAL()) {
 		if (dsi->clk_refcnt == 0) {
 			DDPAEE("%s:%d, %s invalid cnt:%d\n",
 				__func__, __LINE__,
@@ -6153,6 +6219,15 @@ static void mtk_output_dsi_enable(struct mtk_dsi *dsi,
 			dev_err(dsi->dev, "config slave dsi fail: %d", ret);
 			goto out;
 		}
+	}
+
+	/* xaga: with data_rate 0 the phy timing math divides by zero and the
+	 * controller would be started on an unprogrammed serial link.  Wait for
+	 * the panel ext to provide the rate before touching the PHY.
+	 */
+	if (!dsi->data_rate) {
+		dev_info(dsi->dev, "xaga: refusing to start DSI with data_rate 0\n");
+		goto out;
 	}
 
 	ret = mtk_preconfig_dsi_enable(dsi);
@@ -7731,7 +7806,7 @@ void mtk_dsi_dump_lcm(struct mtk_ddp_comp *comp)
 		return;
 
 	dsi = container_of(comp, struct mtk_dsi, ddp_comp);
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+	if (XAGA_DSI_STAGE_NORMAL()) {
 		if (dsi && dsi->ext && dsi->ext->funcs &&
 		    dsi->ext->funcs->lcm_dump)
 			dsi->ext->funcs->lcm_dump(dsi->panel, MTK_DRM_PANEL_DUMP_ALL);
@@ -7941,7 +8016,7 @@ int mtk_dsi_analysis(struct mtk_ddp_comp *comp)
 	}
 
 	DDPDUMP("== %s ANALYSIS:0x%pa ==\n", mtk_dump_comp_str(comp), &comp->regs_pa);
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+	if (XAGA_DSI_STAGE_NORMAL()) {
 
 		DDPDUMP("MIPITX Clock:%d\n", mtk_mipi_tx_pll_get_rate(dsi->phy));
 	}
@@ -16908,7 +16983,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (IS_ERR(dsi->engine_clk)) {
 		ret = PTR_ERR(dsi->engine_clk);
 		dev_err(dev, "Failed to get engine clock: %d\n", ret);
-		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+		if (XAGA_DSI_STAGE_NORMAL())
 			goto error;
 	}
 
@@ -16916,7 +16991,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (IS_ERR(dsi->digital_clk)) {
 		ret = PTR_ERR(dsi->digital_clk);
 		dev_err(dev, "Failed to get digital clock: %d\n", ret);
-		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+		if (XAGA_DSI_STAGE_NORMAL())
 			goto error;
 	}
 
@@ -16924,7 +16999,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (IS_ERR(dsi->hs_clk)) {
 		ret = PTR_ERR(dsi->hs_clk);
 		dev_err(dev, "Failed to get hs clock: %d\n", ret);
-		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+		if (XAGA_DSI_STAGE_NORMAL())
 			goto error;
 	}
 
@@ -16933,7 +17008,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (IS_ERR(dsi->regs)) {
 		ret = PTR_ERR(dsi->regs);
 		dev_err(dev, "Failed to ioremap memory: %d\n", ret);
-		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+		if (XAGA_DSI_STAGE_NORMAL())
 			goto error;
 	}
 
@@ -16941,7 +17016,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (IS_ERR(dsi->phy)) {
 		ret = PTR_ERR(dsi->phy);
 		dev_err(dev, "Failed to get MIPI-DPHY: %d\n", ret);
-		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+		if (XAGA_DSI_STAGE_NORMAL())
 			goto error;
 	}
 
@@ -16999,7 +17074,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 
 #ifndef CONFIG_MTK_DISP_NO_LK
 	/* set ccf reference cnt = 1 */
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL)
+	if (XAGA_DSI_STAGE_NORMAL())
 		pm_runtime_get_sync(dev);
 #endif
 
@@ -17017,8 +17092,16 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	dsi_state_dbg7 = readl(dsi->regs + DSI_STATE_DBG7(dsi->driver_data));
 	dsi_state_dbg8 = readl(dsi->regs + DSI_STATE_DBG8(dsi->driver_data));
 	dsi_state_dbg9 = readl(dsi->regs + DSI_STATE_DBG9(dsi->driver_data));
-	lk_dsi_enabled = dsi_state_dbg6 || dsi_state_dbg7 ||
-			 dsi_state_dbg8 || dsi_state_dbg9;
+	/*
+	 * xaga: DSI_STATE_DBG6-9 are debug-mux outputs (DSI_STATE_DBG6 lives at
+	 * 0x274, shared with the debug selector) and read back non-zero on a
+	 * cold, unpowered controller.  Treating them as "LK already started the
+	 * DSI" makes probe set output_en/panel prepared, so mtk_output_dsi_enable()
+	 * returns early and the engine is never started -> no FRAME_DONE.
+	 * Only a really running video stream counts as an LK handoff.
+	 */
+	lk_dsi_enabled = (readl(dsi->regs + DSI_START) & 0x1) &&
+			 (readl(dsi->regs + DSI_MODE_CTRL(dsi->driver_data)) & 0x3);
 	dsi->lk_dsi_enabled = lk_dsi_enabled;
 
 	dev_info(dev, "DSI_STATE_DGB6-9[0x%x 0x%x 0x%x 0x%x]%s\n",
@@ -17040,7 +17123,7 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 		(mtk_disp_num_from_atag() == 0 &&
 		dsi->ddp_comp.id == DDP_COMPONENT_DSI0) || dsi->is_slave) {
 #ifndef CONFIG_MTK_DISP_NO_LK
-		if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
+		if (XAGA_DSI_STAGE_NORMAL()) {
 			/*
 			 * xaga: modules probe after clk_disable_unused, so the
 			 * LK-started DSI stream may already be gated by the time we

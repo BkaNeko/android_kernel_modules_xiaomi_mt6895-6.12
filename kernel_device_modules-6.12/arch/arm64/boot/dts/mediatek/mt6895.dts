@@ -2755,7 +2755,11 @@
 			clock-div = <1>;
 		};
 
-/*
+		/* xaga: the vendor vibrator HAL needs /sys/class/leds/vibrator,
+		 * otherwise it exits with ENODEV and system_server blocks forever
+		 * in VibratorManagerService.nativeGetVibratorIds(), so the system
+		 * never reaches sys.boot_completed=1.
+		 */
 		regulator_vibrator: regulator_vibrator {
 			compatible = "regulator-vibrator";
 			label = "vibrator";
@@ -2763,7 +2767,6 @@
 			max-volt = <3500000>;
 			vib-supply = <&mt6368_vibr>;
 		};
-*/
 
 		mtk_leds: mtk_leds {
 			backlight {
@@ -5805,7 +5808,12 @@
 
 			operating-points-v2 = <&opp_table_disp0>;
 			mmdvfs-dvfsrc-vcore-supply = <&dvfsrc_vcore>;
-			interconnects = <&mmqos SLAVE_LARB(31) &mmqos SLAVE_COMMON(0)>;
+			/* xaga: mainline (working on this device) uses the MASTER larb port here;
+			 * SLAVE_LARB(31) is not a valid display master and makes the
+			 * disp_hrt_qos vote a no-op.
+			 */
+			interconnects = <&mmqos MASTER_LARB_PORT(M4U_LARB0_PORT7)
+					&mmqos SLAVE_COMMON(0)>;
 			interconnect-names = "disp_hrt_qos";
 			pre-define-bw = <0xffffffff>, <0>, <0>, <0>;
 
@@ -10156,6 +10164,10 @@
 			"JOB",
 			"EVENT",
 			"PWR";
+		protected-memory-allocator = <&gpu_protected_memory_allocator>;
+		/* xaga: match the shipping MT6895 6.12 DT (13T): GPU power is
+		 * owned by gpufreq/GPUEB, kbase must not attach to scpsys MFG1.
+		 */
 		clocks =
 			<&topckgen_clk CLK_TOP_MFG_SEL_0_SEL>,
 			<&topckgen_clk CLK_TOP_MFG_SEL_1_SEL>,
@@ -10176,15 +10188,13 @@
 			"mfgscpll_ck",
 			"mfg_ref_ck",
 			"mfgsc_ref_ck";
-		protected-memory-allocator = <&gpu_protected_memory_allocator>;
-		power-domains = <&scpsys MT6895_POWER_DOMAIN_MFG1>;
-		operating-points-v2 = <&gpu_mali_opp>;
-		#cooling-cells = <2>;
-		system-coherency = <0>;
-		ged-supply = <&ged>;
 		_vstack-supply = <&mt6368_vbuck2>;
 		_vcore-supply = <&mt6363_vbuck2>;
 		_vsram-supply = <&mt6363_vbuck4>;
+		system-coherency = <0>;
+		operating-points-v2 = <&gpu_mali_opp>;
+		#cooling-cells = <2>;
+		ged-supply = <&ged>;
 	};
 
 	camisp: camisp@1a000000 {
@@ -10962,6 +10972,9 @@
 		compatible = "mediatek,gpufreq_wrapper";
 		gpufreq-version = <2>;
 		dual-buck = <1>;
+		/* xaga: the 6.12 mtk_gpufreq_mt6895 only implements EB mode
+		 * ("gpufreq not support AP mode", probe -22), so keep gpueb on.
+		 */
 		gpueb-support = <1>;
 	};
 
@@ -15482,7 +15495,12 @@ cpuqos_mode,dnth0,dnth1,upth0,upth1";
 
 &i2c6 {
 	gate_ic: gate_ic@11 {
-		compatible = "mediatek,gate-ic-i2c";
+		/* xaga: match the stock 5.10 MI_I2C_LCD_BIAS node so leds-ktz8863a
+		 * binds and applies pwm_config; without it the backlight stays dark.
+		 */
+		compatible = "mediatek,MI_I2C_LCD_BIAS";
+		label = "lcd-backlight";
+		pwm_config = <0 1 0 0 0>;
 		gate-power-gpios = <&pio 178 0>;
 		reg = <0x11>;
 		id = <6>;

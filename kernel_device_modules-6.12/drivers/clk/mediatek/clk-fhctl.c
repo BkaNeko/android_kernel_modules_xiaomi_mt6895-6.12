@@ -197,6 +197,7 @@ static int NO_OPTIMIZE fh_plt_drv_probe(struct platform_device *pdev)
 	/* init every subsys */
 	while (*init_call != NULL) {
 		int ret = (*init_call)(array);
+
 		if (ret) {
 			pr_warn("[FHCTL-DIAG] subsys_init failed: %d, deferring probe\n", ret);
 			return ret;

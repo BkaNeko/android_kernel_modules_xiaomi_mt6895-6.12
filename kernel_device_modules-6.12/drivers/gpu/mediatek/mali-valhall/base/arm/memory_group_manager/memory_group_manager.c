@@ -291,7 +291,7 @@ static void update_size(struct memory_group_manager_device *mgm_dev, int
 }
 
 static struct page *example_mgm_alloc_page(
-	struct memory_group_manager_device *mgm_dev, int group_id,
+	struct memory_group_manager_device *mgm_dev, unsigned int group_id,
 	gfp_t gfp_mask, unsigned int order)
 {
 	struct mgm_groups *const data = mgm_dev->data;
@@ -300,8 +300,7 @@ static struct page *example_mgm_alloc_page(
 	dev_vdbg(data->dev, "%s(mgm_dev=%p, group_id=%d gfp_mask=0x%x order=%u\n",
 		__func__, (void *)mgm_dev, group_id, gfp_mask, order);
 
-	if (WARN_ON(group_id < 0) ||
-		WARN_ON(group_id >= MEMORY_GROUP_MANAGER_NR_GROUPS))
+	if (WARN_ON(group_id >= MEMORY_GROUP_MANAGER_NR_GROUPS))
 		return NULL;
 
 	p = alloc_pages(gfp_mask, order);
@@ -318,7 +317,7 @@ static struct page *example_mgm_alloc_page(
 }
 
 static void example_mgm_free_page(
-	struct memory_group_manager_device *mgm_dev, int group_id,
+	struct memory_group_manager_device *mgm_dev, unsigned int group_id,
 	struct page *page, unsigned int order)
 {
 	struct mgm_groups *const data = mgm_dev->data;
@@ -326,8 +325,7 @@ static void example_mgm_free_page(
 	dev_vdbg(data->dev, "%s(mgm_dev=%p, group_id=%d page=%p order=%u\n",
 		__func__, (void *)mgm_dev, group_id, (void *)page, order);
 
-	if (WARN_ON(group_id < 0) ||
-		WARN_ON(group_id >= MEMORY_GROUP_MANAGER_NR_GROUPS))
+	if (WARN_ON(group_id >= MEMORY_GROUP_MANAGER_NR_GROUPS))
 		return;
 
 	__free_pages(page, order);
@@ -356,7 +354,8 @@ static int example_mgm_get_import_memory_id(
 }
 
 static u64 example_mgm_update_gpu_pte(
-	struct memory_group_manager_device *const mgm_dev, int const group_id,
+	struct memory_group_manager_device *const mgm_dev, unsigned int const group_id,
+	unsigned int const pbha_id, unsigned int const pte_flags,
 	int const mmu_level, u64 pte)
 {
 	struct mgm_groups *const data = mgm_dev->data;
@@ -380,7 +379,7 @@ static u64 example_mgm_update_gpu_pte(
 }
 
 static vm_fault_t example_mgm_vmf_insert_pfn_prot(
-	struct memory_group_manager_device *const mgm_dev, int const group_id,
+	struct memory_group_manager_device *const mgm_dev, unsigned int const group_id,
 	struct vm_area_struct *const vma, unsigned long const addr,
 	unsigned long const pfn, pgprot_t const prot)
 {
@@ -392,8 +391,7 @@ static vm_fault_t example_mgm_vmf_insert_pfn_prot(
 		__func__, (void *)mgm_dev, group_id, (void *)vma, addr, pfn,
 		(unsigned long long int) pgprot_val(prot));
 
-	if (WARN_ON(group_id < 0) ||
-		WARN_ON(group_id >= MEMORY_GROUP_MANAGER_NR_GROUPS))
+	if (WARN_ON(group_id >= MEMORY_GROUP_MANAGER_NR_GROUPS))
 		return VM_FAULT_SIGBUS;
 
 	fault = vmf_insert_pfn_prot(vma, addr, pfn, prot);
@@ -476,11 +474,7 @@ static int memory_group_manager_probe(struct platform_device *pdev)
 	return 0;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 11, 0)
 static void memory_group_manager_remove(struct platform_device *pdev)
-#else
-static int memory_group_manager_remove(struct platform_device *pdev)
-#endif
 {
 	struct memory_group_manager_device *mgm_dev =
 		platform_get_drvdata(pdev);
@@ -492,10 +486,6 @@ static int memory_group_manager_remove(struct platform_device *pdev)
 	kfree(mgm_dev);
 
 	dev_info(&pdev->dev, "Memory group manager removed successfully\n");
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
-	return 0;
-#endif
 }
 
 static const struct of_device_id memory_group_manager_dt_ids[] = {

@@ -58,7 +58,7 @@ for arg in "$@"; do
 done
 
 DTS_DIR="$M/arch/arm64/boot/dts/mediatek"
-WORK="$(mktemp -d /tmp/xaga_build.XXXXXX)"
+WORK="$(mktemp -d /home/bkaneko/work/tmpbuild/xaga_build.XXXXXX)"
 
 # ---------------------------------------------------------------------------
 # Progress visualization: every log() line carries [HH:MM:SS] + (N/8) step
@@ -150,7 +150,8 @@ else
     fi
 fi
 
-INC="-I$M/drivers/gpu/mediatek/gpueb -I$M/drivers/misc/mediatek/blocktag -I$M -I$M/drivers -I$M/include -I$M/include/soc/mediatek -I$M/drivers/clk/mediatek -I$M/drivers/gpu/mediatek/gpufreq -I$M/drivers/gpu/mediatek/gpufreq/v2/include -I$M/drivers/gpu/mediatek/gpueb/include -I$M/drivers/gpu/mediatek/mt-plat -I$M/drivers/misc/mediatek/typec/tcpc/inc -I$M/drivers/misc/mediatek/mtk-interconnect -I$M/drivers/misc/mediatek/include -I$M/drivers/misc/mediatek/include/mt-plat -I$M/drivers/misc/mediatek/mminfra -I$M/drivers/misc/mediatek/power_throttling -I$M/drivers/misc/mediatek/dcm -I$M/drivers/misc/mediatek/dcm/include -I$M/drivers/misc/mediatek/mdpm -I$M/drivers/misc/mediatek/aee/mrdump -I$M/drivers/misc/mediatek/aee/aed -I$M/drivers/misc/mediatek/mcupm/include -I$M/drivers/misc/mediatek/pbm -I$M/drivers/misc/mediatek/sda/include -I$M/drivers/misc/mediatek/mdp -I$M/drivers/misc/mediatek/smi -I$M/drivers/misc/mediatek/mmdvfs -I$M/drivers/misc/mediatek/qos -I$M/drivers/misc/mediatek/mm_monitor -I$M/drivers/misc/mediatek/mmp -I$M/drivers/misc/mediatek/vcp/rv -I$M/drivers/misc/mediatek/vcp/rv_v2 -I$M/drivers/misc/mediatek/vcp/include -I$M/drivers/misc/mediatek/iommu -I$M/drivers/iommu/arm/arm-smmu-v3 -I$M/drivers/ufs -I$M/drivers/iommu -I$M/drivers/memory -I$M/drivers/usb/mtu3 -I$M/drivers/char/rpmb -I$M/drivers/char/rpmb/core -I$M/drivers/char/rpmb/drrpmb_gp/public -I$M/drivers/mmc/host -I$M/drivers/power/supply -I$M/drivers/tee/gud/700/MobiCoreDriver -I$M/drivers/tee/gud/700/MobiCoreDriver/public -I$M/drivers/dma-buf/heaps -I$M/drivers/media/platform/mtk-vcodec -I$M/drivers/gpu/drm/mediatek/dpc -I$M/drivers/gpu/mediatek/gpufreq/v2 -I$M/drivers/gpu/mediatek/gpufreq -I$K/drivers/devfreq -I$K/drivers/mmc/host -I$K/drivers/tty/serial/8250 -I$K/drivers/dma -I$K/drivers/ufs/host -I$K/drivers/ufs/core -I$K/drivers/usb/typec -I$K/kernel -I$K/include -I$M/drivers/thermal -I$M/drivers/thermal/mediatek -I$M/drivers/misc/mediatek/slbc -I$M/drivers/misc/mediatek/geniezone/include -I$M/drivers/misc/mediatek/geniezone/public -I$M/drivers/misc/mediatek/trusted_mem/public -I$M/drivers/tee/teei/520/common/include -I$M/drivers/tee/teei/520/public -I$M/drivers/tee/teei/520/tz_driver/include"
+INC="-I$M/drivers/gpu/mediatek/gpueb -I$M/drivers/misc/mediatek/blocktag -I$M -I$M/drivers -I$M/include -I$M/include/soc/mediatek -I$M/drivers/clk/mediatek -I$M/drivers/gpu/mediatek/gpufreq -I$M/drivers/gpu/mediatek/gpufreq/v2/include -I$M/drivers/gpu/mediatek/gpueb/include -I$M/drivers/gpu/mediatek/ged/include -I$M/drivers/gpu/mediatek/ged -I$M/drivers/gpu/mediatek/gpufreq/v1 -I$M/drivers/gpu/mediatek/mt-plat -I$M/drivers/misc/mediatek/typec/tcpc/inc -I$M/drivers/misc/mediatek/mtk-interconnect -I$M/drivers/misc/mediatek/include -I$M/drivers/misc/mediatek/include/mt-plat -I$M/drivers/misc/mediatek/mminfra -I$M/drivers/misc/mediatek/power_throttling -I$M/drivers/misc/mediatek/dcm -I$M/drivers/misc/mediatek/dcm/include -I$M/drivers/misc/mediatek/mdpm -I$M/drivers/misc/mediatek/aee/mrdump -I$M/drivers/misc/mediatek/aee/aed -I$M/drivers/misc/mediatek/mcupm/include -I$M/drivers/misc/mediatek/pbm -I$M/drivers/misc/mediatek/sda/include -I$M/drivers/misc/mediatek/mdp -I$M/drivers/misc/mediatek/smi -I$M/drivers/misc/mediatek/mmdvfs -I$M/drivers/misc/mediatek/qos -I$M/drivers/misc/mediatek/mm_monitor -I$M/drivers/misc/mediatek/mmp -I$M/drivers/misc/mediatek/vcp/rv -I$M/drivers/misc/mediatek/vcp/rv_v2 -I$M/drivers/misc/mediatek/vcp/include -I$M/drivers/misc/mediatek/iommu -I$M/drivers/iommu/arm/arm-smmu-v3 -I$M/drivers/ufs -I$M/drivers/iommu -I$M/drivers/memory -I$M/drivers/usb/mtu3 -I$M/drivers/char/rpmb -I$M/drivers/char/rpmb/core -I$M/drivers/char/rpmb/drrpmb_gp/public -I$M/drivers/mmc/host -I$M/drivers/power/supply -I$M/drivers/tee/gud/700/MobiCoreDriver -I$M/drivers/tee/gud/700/MobiCoreDriver/public -I$M/drivers/dma-buf/heaps -I$M/drivers/media/platform/mtk-vcodec -I$M/drivers/gpu/drm/mediatek/dpc -I$M/drivers/gpu/mediatek/gpufreq/v2 -I$M/drivers/gpu/mediatek/gpufreq -I$K/drivers/devfreq -I$K/drivers/mmc/host -I$K/drivers/tty/serial/8250 -I$K/drivers/dma -I$K/drivers/ufs/host -I$K/drivers/ufs/core -I$K/drivers/usb/typec -I$K/kernel -I$K/include -I$M/drivers/thermal -I$M/drivers/thermal/mediatek -I$M/drivers/misc/mediatek/slbc -I$M/drivers/misc/mediatek/geniezone/include -I$M/drivers/misc/mediatek/geniezone/public -I$M/drivers/misc/mediatek/trusted_mem/public -I$M/drivers/tee/teei/520/common/include -I$M/drivers/tee/teei/520/public -I$M/drivers/tee/teei/520/tz_driver/include"
+INC="$INC -I$M/drivers/misc/mediatek/tinysys_scmi -I$M/drivers/misc/mediatek/perf_common"
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +383,19 @@ pack_boot() {
     lz4 -l -d -f ramdisk.cpio ramdisk.raw > /dev/null 2>&1 || true
     "$MAGISKBOOT" cpio ramdisk.raw "add 0755 kernelsu.ko $KERNELSU" \
         > "$WORK/boot_cpio.log" 2>&1
+    # xaga: adb root / debuggable boot props. android init loads /prop.default
+    # from the ramdisk before system/vendor build.prop, and ro.* is immutable
+    # once set, so these win over the release-keys values. The OS4 port is a
+    # user build: without this adbd refuses "adb root" and shell cannot read
+    # kmsg.
+    cat > "$WORK/prop.adbroot" <<'PROPEOF'
+ro.debuggable=1
+ro.secure=0
+ro.adb.secure=0
+service.adb.root=1
+PROPEOF
+    "$MAGISKBOOT" cpio ramdisk.raw "add 0644 prop.default $WORK/prop.adbroot" \
+        >> "$WORK/boot_cpio.log" 2>&1
     lz4 -l -9 -f ramdisk.raw ramdisk_new.lz4 > /dev/null 2>&1
     cp ramdisk_new.lz4 ramdisk.cpio
     "$MAGISKBOOT" repack -n "$BOOT_BASE" > "$WORK/boot_repack.log" 2>&1
@@ -420,6 +434,61 @@ pack_vendor() {
     mkdir -p rd && cd rd
     # cpio returns 2 on some entries (hardlink warnings); unpack is fine
     cpio -idmv < ../vr.raw > /dev/null 2>&1 || true
+
+    # xaga debug (TEMPORARY): /xaga_boot.sh is executed as root by the kernel
+    # xaga_boot thread ~20s after boot. It flips SELinux permissive, opens
+    # dmesg and dumps surfaceflinger's EGL mappings so the release-adbd build
+    # can still be diagnosed. Remove together with kernel/xaga_boot.c.
+    cat > xaga_boot.sh <<'XAGADBG'
+#!/system/bin/sh
+exec >/data/local/tmp/xaga_boot.txt 2>&1
+echo "== boot =="
+date
+cat /proc/uptime
+id
+setenforce 0
+echo "enforce=$(cat /sys/fs/selinux/enforce 2>&1)"
+echo 0 > /proc/sys/kernel/dmesg_restrict 2>/dev/null
+echo 0 > /proc/sys/kernel/kptr_restrict 2>/dev/null
+echo "== props =="
+getprop | grep -E "ro.debuggable|ro.hardware.egl|ro.vendor.build.fingerprint|ro.vndk.version|ro.secure"
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  p=$(pidof surfaceflinger)
+  if [ -n "$p" ]; then
+    echo "== SF pid=$p =="
+    cat /proc/$p/maps 2>&1 | grep -iE "egl|mali|meow"
+    echo "dom=$(cat /proc/$p/attr/current 2>&1)"
+    break
+  fi
+  sleep 2
+done
+echo "== dmesg mali =="
+dmesg 2>&1 | grep -iE "mali|kbase|gpu" | tail -80
+echo "== logcat egl =="
+logcat -d -b all 2>/dev/null | grep -iE "libEGL|dlopen|egl" | tail -60
+echo "== done =="
+XAGADBG
+
+    # xaga/OS4: the device runs a patched LK + stock vbmeta, and the ported ROM
+    # relies on an fstab whose AVB tokens were stripped (new-port fstab_noavb).
+    # Packing the stock ramdisk fstab with ,avb / ,avb= / ,avb_keys= makes
+    # first-stage fs_mgr verify the re-signed OS4 partitions against the stock
+    # vbmeta; the mount then fails, init cannot exec /system/bin/init and dies
+    # with exit 127. Strip ONLY the AVB tokens - never touch fileencryption=,
+    # keydirectory= or inlinecrypt (that would break FBE on /data).
+    find first_stage_ramdisk -maxdepth 1 -name 'fstab*' -type f | while read -r f; do
+        python3 - "$f" <<'PYEOF'
+import re, sys
+p = sys.argv[1]
+with open(p, encoding='utf-8', errors='surrogateescape') as fh:
+    s = fh.read()
+new, n = re.subn(r',avb(?:_keys)?(?:=[^,\s]*)?', '', s)
+if n:
+    with open(p, 'w', encoding='utf-8', errors='surrogateescape') as fh:
+        fh.write(new)
+    print("  %s: removed %d AVB token(s)" % (p, n))
+PYEOF
+    done
 
     # remove all 5.10 modules, install 6.12 ones
     find . -name '*.ko' -delete
@@ -507,17 +576,17 @@ for line in lines:
         add = [d for d in extra if d not in deps.split()]
         if add:
             line = line.rstrip('\n') + (' ' if deps else '') + ' '.join(add) + '\n'
-    # mali_prot_alloc.ko must load after mtk_gpueb and ged
-    if line.startswith('mali_prot_alloc.ko:'):
-        deps = line.rstrip('\n').split(':', 1)[1]
-        extra = ['mtk_gpueb.ko', 'ged.ko']
-        add = [d for d in extra if d not in deps.split()]
-        if add:
-            line = line.rstrip('\n') + (' ' if deps else '') + ' '.join(add) + '\n'
     # fhctl.ko must load after mcupm.ko, mtk_gpueb.ko, and mtk_tinysys_ipi.ko
     if line.startswith('fhctl.ko:'):
         deps = line.rstrip('\n').split(':', 1)[1]
         extra = ['mcupm.ko', 'mtk_gpueb.ko', 'mtk_tinysys_ipi.ko']
+        add = [d for d in extra if d not in deps.split()]
+        if add:
+            line = line.rstrip('\n') + (' ' if deps else '') + ' '.join(add) + '\n'
+    # mali_prot_alloc.ko must load after mtk_gpueb and ged
+    if line.startswith('mali_prot_alloc.ko:'):
+        deps = line.rstrip('\n').split(':', 1)[1]
+        extra = ['mtk_gpueb.ko', 'ged.ko']
         add = [d for d in extra if d not in deps.split()]
         if add:
             line = line.rstrip('\n') + (' ' if deps else '') + ' '.join(add) + '\n'
@@ -571,8 +640,6 @@ for line in lines:
         if add:
             line = line.rstrip('\n') + (' ' if deps else '') + ' '.join(add) + '\n'
     out.append(line)
-if not any(l.startswith('fhctl.ko:') for l in out):
-    out.append('fhctl.ko: mcupm.ko mtk_gpueb.ko mtk_tinysys_ipi.ko\n')
 with open(dep_path, 'w') as f:
     f.writelines(out)
 PYEOF
@@ -644,7 +711,7 @@ PYEOF
     cp modules.load modules.load.recovery
     # Set default module options for mali_kbase (also customizable via magiskboot repack)
     cat << 'EOF' > modules.options
-options mali_kbase_mt6895 mali_hw_seq_mask=7 csf_workaround=1 mali_strip_share=0
+options mali_kbase_mt6895 xaga_prepower=0 mali_strip_share=0 mali_force_coh_none=0
 EOF
     cp modules.options modules.options.recovery 2>/dev/null || true
     if [ -f "$VD/vendor_ramdisk/rd/lib/modules/isee.ko" ]; then
@@ -681,7 +748,7 @@ EOF
     python3 "$MKBOOTIMG" --vendor_boot "$VD/vendor_boot_new.img" \
         --vendor_ramdisk "$VD/vr_new.lz4" \
         --dtb "$VD/dtb_container.bin" \
-        --vendor_cmdline "bootopt=64S3,32N2,64N2 clk_ignore_unused" \
+        --vendor_cmdline "bootopt=64S3,32N2,64N2 log_buf_len=8M clk_ignore_unused androidboot.selinux=permissive enforcing=0 xaga.no_reboot=1" \
         --base 0x40000000 --kernel_offset 0 --ramdisk_offset 0x26f00000 \
         --tags_offset 0x7c80000 --dtb_offset 0x7c80000 \
         --header_version 4 --pagesize 4096 --board "" > "$WORK/vb_mkboot.log" 2>&1

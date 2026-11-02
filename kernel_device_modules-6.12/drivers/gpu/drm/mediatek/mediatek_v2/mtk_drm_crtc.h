@@ -594,6 +594,7 @@ enum MTK_CRTC_PROP {
 #ifdef CONFIG_MI_DISP_FOD_SYNC
 	CRTC_PROP_MI_FOD_SYNC_INFO,
 #endif
+	CRTC_PROP_SKIP_CONFIG,     /* xaga HWC legacy, disabled-only */
 	CRTC_PROP_MAX,
 };
 

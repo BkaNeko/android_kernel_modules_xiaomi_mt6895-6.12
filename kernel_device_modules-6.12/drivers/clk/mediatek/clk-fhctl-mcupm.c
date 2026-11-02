@@ -579,8 +579,10 @@ int fhctl_mcupm_init(struct pll_dts *array)
 		if (strcmp(method,
 					FHCTL_TARGET) == 0) {
 			int ret = (*match)->init(array, *match);
+
 			if (ret) {
-				pr_err("[FHCTL-DIAG] [MCUPM] init failed for pll %s: %d\n", array->pll_name, ret);
+				pr_err("[FHCTL-DIAG] [MCUPM] init failed for pll %s: %d\n",
+				       array->pll_name, ret);
 				return ret;
 			}
 		}

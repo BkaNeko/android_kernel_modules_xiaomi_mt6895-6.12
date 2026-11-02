@@ -39,6 +39,7 @@
 #include "mtk_drm_ddp_comp.h"
 #include "mtk_drm_debugfs.h"
 #include "mtk_drm_drv.h"
+#include "xaga_hwc_abi.h"
 #include "mtk_drm_fb.h"
 #include "mtk_drm_gem.h"
 #include "mtk_drm_session.h"
@@ -1250,6 +1251,31 @@ static bool mtk_drm_is_enable_from_lk(struct drm_crtc *crtc)
 
 	if (comp && mtk_ddp_comp_get_type(comp->id) == MTK_DSI) {
 		alias = mtk_ddp_comp_get_alias(comp->id);
+
+		/*
+		 * xaga: on this board the bootloader only leaves a half-width
+		 * logo layer behind (or nothing at all).  Treating that as a
+		 * usable hand-off makes the kernel skip mtk_drm_crtc_enable(),
+		 * which is the only place that attaches/configures/starts the
+		 * whole data path (both dual-pipe halves, DSC and the mutex).
+		 * Force the normal enable path instead, and mark the CRTC as
+		 * DISP_ENABLE so the vendor HWC hand-off state does not skip
+		 * the commit either.
+		 */
+		if (drm_crtc_index(crtc) == 0 && mtk_crtc && mtk_crtc->base.dev) {
+			struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
+			struct mtk_ddp_comp *ovl0 =
+				priv ? priv->ddp_comp[DDP_COMPONENT_OVL0] : NULL;
+
+			if (priv && ovl0 && ovl0->regs &&
+			    !(readl(ovl0->regs + 0x002c) & 0xf)) {
+				dev_info(mtk_crtc->base.dev->dev,
+					 "xaga: bootloader did not program the display pipe, using the normal enable path\n");
+				if (priv->usage[0] == DISP_OPENING)
+					priv->usage[0] = DISP_ENABLE;
+				return false;
+			}
+		}
 
 		if (mtk_disp_num_from_atag() & BIT(alias) ||
 				(mtk_disp_num_from_atag() == 0 && drm_crtc_index(crtc) == 0))
@@ -9117,9 +9143,13 @@ int _parse_tag_videolfb(unsigned int *vramsize, phys_addr_t *fb_base,
 			*fps = videolfb_tag->fps;
 			if (*fps == 0)
 				*fps = 6000;
+			pr_info("xaga: videolfb tag fb_base=0x%lx vram=0x%x fps=%u\n",
+				(unsigned long)videolfb_tag->fb_base,
+				videolfb_tag->vram, videolfb_tag->fps);
 			goto found;
 		} else {
 			DDPINFO("[DT][videolfb] videolfb_tag not found\n");
+			pr_info("xaga: videolfb tag MISSING in /chosen\n");
 			return -1;
 		}
 	} else {
@@ -9158,6 +9188,7 @@ int _parse_first_exdma(unsigned int *exdma_id)
 			goto found;
 		} else {
 			DDPINFO("[DT][videolfb] videolfb_tag not found\n");
+			pr_info("xaga: videolfb tag MISSING in /chosen\n");
 			return -1;
 		}
 	} else {
@@ -11549,11 +11580,38 @@ EXPORT_SYMBOL(mtk_drm_compat_ioctl);
 #define mtk_drm_compat_ioctl NULL
 #endif
 
+/* xaga: the vendor HWC issues the 4.14 layering ABI (128-byte request,
+ * 60-byte layers, ioctl 0xc0806445) which does not match the native 6.12
+ * structure size, so the DRM core would reject it. Translate it here.
+ */
+static long xaga_drm_ioctl(struct file *file, unsigned int cmd,
+			   unsigned long arg)
+{
+	struct xaga_hwc_layering data;
+	void __user *argp = (void __user *)arg;
+	long ret;
+
+	if (cmd != DRM_IOWR(DRM_COMMAND_BASE + DRM_MTK_LAYERING_RULE,
+			    struct xaga_hwc_layering))
+		return drm_ioctl(file, cmd, arg);
+
+	if (copy_from_user(&data, argp, sizeof(data)))
+		return -EFAULT;
+	/* Preserve the normal DRM unplug/authentication checks. */
+	ret = drm_ioctl_kernel(file, xaga_layering_rule_ioctl, &data,
+			       DRM_AUTH | DRM_RENDER_ALLOW);
+	if (ret)
+		return ret;
+	if (copy_to_user(argp, &data, sizeof(data)))
+		return -EFAULT;
+	return 0;
+}
+
 static const struct file_operations mtk_drm_fops = {
 	.owner = THIS_MODULE,
 	.open = drm_open,
 	.release = drm_release,
-	.unlocked_ioctl = drm_ioctl,
+	.unlocked_ioctl = xaga_drm_ioctl,
 	.mmap = mtk_drm_gem_mmap,
 	.poll = drm_poll,
 	.read = drm_read,
@@ -11589,6 +11647,108 @@ static int compare_of(struct device *dev, void *data)
 	return dev->of_node == data;
 }
 
+/* xaga: the vendor HWC's first blankDisplay sets ACTIVE/DOZE_ACTIVE without
+ * MODE_ID. The 4.14 stack used fbdev to establish an initial KMS mode; the
+ * 6.12 KMS has no fbdev, so the core CRTC stays disabled and every later
+ * atomic check fails. Install a real mode before drm_dev_register().
+ */
+static int xaga_drm_publish_boot_mode(struct drm_device *drm)
+{
+	struct mtk_drm_private *priv = drm->dev_private;
+	struct drm_crtc *crtc = priv->crtc[0];
+	struct drm_connector *connector, *panel = NULL;
+	struct drm_connector_list_iter iter;
+	struct drm_encoder *encoder;
+	struct drm_display_mode *mode, *selected;
+	struct drm_display_mode boot_mode;
+	struct drm_modeset_acquire_ctx ctx;
+	struct drm_atomic_state *state;
+	struct drm_crtc_state *crtc_state;
+	struct drm_connector_state *conn_state;
+	int ret;
+
+	if (!crtc)
+		return 0;
+
+	drm_connector_list_iter_begin(drm, &iter);
+	drm_for_each_connector_iter(connector, &iter) {
+		if (connector->connector_type != DRM_MODE_CONNECTOR_DSI)
+			continue;
+		drm_connector_for_each_possible_encoder(connector, encoder) {
+			if (encoder->possible_crtcs & drm_crtc_mask(crtc)) {
+				panel = connector;
+				drm_connector_get(panel);
+				break;
+			}
+		}
+		if (panel)
+			break;
+	}
+	drm_connector_list_iter_end(&iter);
+	if (!panel)
+		return -ENODEV;
+
+	mutex_lock(&drm->mode_config.mutex);
+	ret = panel->funcs->fill_modes(panel, drm->mode_config.max_width,
+				       drm->mode_config.max_height);
+	if (ret <= 0 || list_empty(&panel->modes)) {
+		ret = ret < 0 ? ret : -ENODEV;
+		mutex_unlock(&drm->mode_config.mutex);
+		goto put_connector;
+	}
+	selected = list_first_entry(&panel->modes, struct drm_display_mode, head);
+	list_for_each_entry(mode, &panel->modes, head) {
+		if (mode->type & DRM_MODE_TYPE_PREFERRED)
+			selected = mode;
+		if (drm_mode_equal(mode, &crtc->state->adjusted_mode)) {
+			selected = mode;
+			break;
+		}
+	}
+	drm_mode_copy(&boot_mode, selected);
+	mutex_unlock(&drm->mode_config.mutex);
+
+	state = drm_atomic_state_alloc(drm);
+	if (!state) {
+		ret = -ENOMEM;
+		goto put_connector;
+	}
+	drm_modeset_acquire_init(&ctx, 0);
+	state->acquire_ctx = &ctx;
+retry:
+	crtc_state = drm_atomic_get_crtc_state(state, crtc);
+	if (IS_ERR(crtc_state)) {
+		ret = PTR_ERR(crtc_state);
+		goto out;
+	}
+	conn_state = drm_atomic_get_connector_state(state, panel);
+	if (IS_ERR(conn_state)) {
+		ret = PTR_ERR(conn_state);
+		goto out;
+	}
+	ret = drm_atomic_set_crtc_for_connector(conn_state, crtc);
+	if (ret)
+		goto out;
+	ret = drm_atomic_set_mode_for_crtc(crtc_state, &boot_mode);
+	if (ret)
+		goto out;
+	crtc_state->active = true;
+	ret = drm_atomic_commit(state);
+	if (ret == -EDEADLK) {
+		drm_atomic_state_clear(state);
+		drm_modeset_backoff(&ctx);
+		goto retry;
+	}
+	DDPINFO("xaga: publish boot mode '%s' ret=%d\n", boot_mode.name, ret);
+out:
+	drm_atomic_state_put(state);
+	drm_modeset_drop_locks(&ctx);
+	drm_modeset_acquire_fini(&ctx);
+put_connector:
+	drm_connector_put(panel);
+	return ret;
+}
+
 static int mtk_drm_bind(struct device *dev)
 {
 	struct mtk_drm_private *private = dev_get_drvdata(dev);
@@ -11606,6 +11766,10 @@ static int mtk_drm_bind(struct device *dev)
 	ret = mtk_drm_kms_init(drm);
 	if (ret < 0)
 		goto err_free;
+
+	ret = xaga_drm_publish_boot_mode(drm);
+	if (ret)
+		DDPPR_ERR("xaga: publish boot mode failed: %d\n", ret);
 
 	ret = drm_dev_register(drm, 0);
 	if (ret < 0)
@@ -13581,8 +13745,119 @@ static struct platform_driver *const mtk_drm_drivers[] = {
 	&mtk_disp_dbi_count_driver,
 };
 
+
+/* xaga: full display register snapshot ported from the mt6895-mainline tree,
+ * which brings this very device up.  Used to locate the first display stage
+ * that has not been programmed.
+ */
+static void xaga_dump_ovl_layers(const char *tag, void __iomem *base,
+				 const char *name)
+{
+	int i;
+
+	for (i = 0; i < 4; i++)
+		pr_err("XAGA[%s] %s L%d CON=0x%08x SRC_SIZE=0x%08x OFFSET=0x%08x PITCH=0x%08x RDMA_CTRL=0x%08x ADDR=0x%08x\n",
+		       tag, name, i,
+		       readl(base + 0x30 + 0x20 * i),
+		       readl(base + 0x38 + 0x20 * i),
+		       readl(base + 0x3c + 0x20 * i),
+		       readl(base + 0x44 + 0x20 * i),
+		       readl(base + 0xc0 + 0x20 * i),
+		       readl(base + 0xf40 + 0x20 * i));
+}
+
+void xaga_dump_disp(const char *stage)
+{
+	static const u32 obase[3] = { 0x14002000, 0x14003000, 0x14004000 };
+	static const char *oname[3] = { "OVL0", "OVL0_2L", "OVL1_2L" };
+	void __iomem *mx, *mu, *ov[3], *rd0, *dsc, *dsi;
+	int i;
+
+	mx = ioremap(0x14000000, 0x4000);
+	mu = ioremap(0x14001000, 0x1000);
+	rd0 = ioremap(0x14006000, 0x1000);
+	dsc = ioremap(0x14015000, 0x1000);
+	dsi = ioremap(0x14017000, 0x1000);
+	for (i = 0; i < 3; i++)
+		ov[i] = ioremap(obase[i], 0x1000);
+	if (!mx || !mu || !rd0 || !dsc || !dsi)
+		goto out;
+
+	pr_err("XAGA[%s] MUTEX EN=0x%08x SOF=0x%08x MOD0=0x%08x MOD1=0x%08x\n",
+	       stage, readl(mu + 0x20), readl(mu + 0x2c), readl(mu + 0x30),
+	       readl(mu + 0x34));
+	for (i = 0; i < 3; i++) {
+		pr_err("XAGA[%s] %s EN=0x%08x INTSTA=0x%08x ROI=0x%08x SRC_CON=0x%08x DATAPATH=0x%08x\n",
+		       stage, oname[i], readl(ov[i] + 0x0c), readl(ov[i] + 0x08),
+		       readl(ov[i] + 0x20), readl(ov[i] + 0x2c),
+		       readl(ov[i] + 0x24));
+		xaga_dump_ovl_layers(stage, ov[i], oname[i]);
+	}
+	{
+		/* xaga: dual-pipe right half lives in mmsys1 */
+		void __iomem *rov[3], *rd2;
+		static const u32 rbase[3] = { 0x14402000, 0x14403000, 0x14404000 };
+		static const char *rname[3] = { "ROVL1", "ROVL2_2L", "ROVL3_2L" };
+
+		rd2 = ioremap(0x14406000, 0x1000);
+		for (i = 0; i < 3; i++) {
+			rov[i] = ioremap(rbase[i], 0x1000);
+			if (!rov[i])
+				continue;
+			pr_err("XAGA[%s] %s EN=0x%08x INTSTA=0x%08x ROI=0x%08x SRC_CON=0x%08x DATAPATH=0x%08x\n",
+			       stage, rname[i], readl(rov[i] + 0x0c), readl(rov[i] + 0x08),
+			       readl(rov[i] + 0x20), readl(rov[i] + 0x2c),
+			       readl(rov[i] + 0x24));
+			xaga_dump_ovl_layers(stage, rov[i], rname[i]);
+			iounmap(rov[i]);
+		}
+		if (rd2) {
+			pr_err("XAGA[%s] RDMA2 GLOBAL=0x%08x SIZE0=0x%08x FIFO=0x%08x ADDR=0x%08x\n",
+			       stage, readl(rd2 + 0x10), readl(rd2 + 0x14),
+			       readl(rd2 + 0x40), readl(rd2 + 0x0f00));
+			iounmap(rd2);
+		}
+	}
+
+	pr_err("XAGA[%s] RDMA0 GLOBAL=0x%08x SIZE0=0x%08x SIZE1=0x%08x FIFO=0x%08x INT_STA=0x%08x MEM_CON=0x%08x ADDR=0x%08x PITCH=0x%08x\n",
+	       stage, readl(rd0 + 0x10), readl(rd0 + 0x14), readl(rd0 + 0x18),
+	       readl(rd0 + 0x40), readl(rd0 + 0x04), readl(rd0 + 0x24),
+	       readl(rd0 + 0x0f00), readl(rd0 + 0x2c));
+	pr_err("XAGA[%s] DSC CON=0x%08x MODE=0x%08x ENC_W=0x%08x PIC_W=0x%08x PIC_H=0x%08x SLICE_W=0x%08x SLICE_H=0x%08x\n",
+	       stage, readl(dsc + 0x00), readl(dsc + 0x30), readl(dsc + 0x3c),
+	       readl(dsc + 0x18), readl(dsc + 0x1c), readl(dsc + 0x20),
+	       readl(dsc + 0x24));
+	pr_err("XAGA[%s] DSI START=0x%08x INTSTA=0x%08x CON=0x%08x MODE=0x%08x TXRX=0x%08x\n",
+	       stage, readl(dsi + 0x00), readl(dsi + 0x0c), readl(dsi + 0x10),
+	       readl(dsi + 0x14), readl(dsi + 0x18));
+	pr_err("XAGA[%s] DSI VSA=0x%08x VBP=0x%08x VFP=0x%08x VACT=0x%08x HSA=0x%08x HBP=0x%08x HFP=0x%08x\n",
+	       stage, readl(dsi + 0x20), readl(dsi + 0x24), readl(dsi + 0x28),
+	       readl(dsi + 0x2c), readl(dsi + 0x50), readl(dsi + 0x54),
+	       readl(dsi + 0x58));
+	pr_err("XAGA[%s] XBAR F24=0x%08x F8C=0x%08x F34=0x%08x F38=0x%08x F3C=0x%08x F40=0x%08x\n",
+	       stage, readl(mx + 0xf24), readl(mx + 0xf8c), readl(mx + 0xf34),
+	       readl(mx + 0xf38), readl(mx + 0xf3c), readl(mx + 0xf40));
+out:
+	if (mx)
+		iounmap(mx);
+	if (mu)
+		iounmap(mu);
+	for (i = 0; i < 3; i++)
+		if (ov[i])
+			iounmap(ov[i]);
+	if (rd0)
+		iounmap(rd0);
+	if (dsc)
+		iounmap(dsc);
+	if (dsi)
+		iounmap(dsi);
+}
+EXPORT_SYMBOL_GPL(xaga_dump_disp);
+
 static int __init mtk_drm_init(void)
 {
+	pr_info("xaga build fingerprint: ovl+wfe+fbmod v3\n");
+
 	int ret;
 	int i;
 

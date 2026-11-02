@@ -176,6 +176,11 @@ static struct mtk_drm_property mtk_plane_property[PLANE_PROP_MAX] = {
 	{DRM_MODE_PROP_ATOMIC, "DIRTY_ROI_W", 0, ULONG_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "DIRTY_ROI_H", 0, ULONG_MAX, 0},
 	{DRM_MODE_PROP_ATOMIC, "MODE", 0, UINT_MAX, 0},
+	/* xaga: legacy MTK HWC looks these names up verbatim during plane init;
+	 * without them DrmObject::checkProperty() fails and HWC never submits.
+	 */
+	{DRM_MODE_PROP_ATOMIC, "PLANE_PROP_PLANE_ALPHA", 0, 255, 255},
+	{DRM_MODE_PROP_ATOMIC, "PLANE_PROP_ALPHA_CON", 0, 1, 1},
 };
 
 static void mtk_plane_reset(struct drm_plane *plane)

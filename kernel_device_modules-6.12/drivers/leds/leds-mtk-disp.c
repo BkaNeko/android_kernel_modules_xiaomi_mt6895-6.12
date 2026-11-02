@@ -137,6 +137,17 @@ static int __maybe_unused led_disp_conn_set(struct mt_led_data *mdev,
 {
 	int ret = 0;
 
+	/* xaga: connector id was resolved during probe, before the DRM device
+	 * existed, and stayed -22 forever. Re-resolve it on demand.
+	 */
+	if (mdev->conf.connector_id < 0 && mdev->mtk_conn_id_get) {
+		int id = mdev->mtk_conn_id_get(mdev, 0);
+
+		(void)id;
+	}
+	if (mdev->conf.connector_id < 0)
+		return -EPROBE_DEFER;
+
 	ret = mtk_drm_set_conn_backlight_level(mdev->conf.connector_id, brightness,
 		params, params_flag);
 	pr_debug("set conn %d brightness %d, elvss: %u, flag: %u, return %d",

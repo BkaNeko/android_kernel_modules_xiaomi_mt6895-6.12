@@ -1187,6 +1187,15 @@ err:
 	return 0;
 }
 static unsigned int bl_level = 2047;
+/* xaga: the DRM DSI_SET_BL path only calls set_backlight_cmdq(); the plain
+ * i2c hook was never invoked, so the backlight IC stayed dark.
+ */
+static int lcm_setbacklight_cmdq(void *dsi_drv, dcs_write_gce cb,
+		void *handle, unsigned int level)
+{
+	return ktz8863a_brightness_set(level);
+}
+
 static int lcm_setbacklight_i2c(struct drm_panel *panel, unsigned int level)
 {
 	struct lcm *ctx = panel_to_lcm(panel);
@@ -1304,6 +1313,7 @@ static struct mtk_panel_funcs ext_funcs = {
 	.mode_switch = mode_switch,
 #ifdef CONFIG_MI_DISP
 	.set_backlight_i2c = lcm_setbacklight_i2c,
+	.set_backlight_cmdq = lcm_setbacklight_cmdq,
 	.get_panel_info = panel_get_panel_info,
 	.led_i2c_reg_op = lcm_led_i2c_reg_op,
 	.get_panel_dynamic_fps =  panel_get_dynamic_fps,

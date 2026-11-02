@@ -601,13 +601,6 @@ static inline void gpu_dvfs_status_reset_footprint(void)
 
 static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 {
-#if defined(CONFIG_MTK_GPUFREQ_V2)
-	if (mtk_common_gpufreq_bringup()) {
-		mtk_common_pm_mfg_active();
-		return 0;
-	}
-#endif /* CONFIG_MTK_GPUFREQ_V2 */
-
 	if (mtk_common_pm_is_mfg_active())
 		return 0;
 
@@ -615,15 +608,10 @@ static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_1);
 
-	/* Stock Step 1: on,off/ SWCG(BG3D)/ MTCMOS/ BUCK via gpufreq_power_control */
-#if defined(CONFIG_MTK_GPUFREQ_V2)
-	dev_info(kbdev->dev, "GPU PM Callback - Calling gpufreq_power_control(GPU_PWR_ON)\n");
-	if (gpufreq_power_control(GPU_PWR_ON) < 0) {
-		dev_info(kbdev->dev, "GPU PM Callback - Power On Failed");
-		return 1;
-	}
-	dev_info(kbdev->dev, "GPU PM Callback - Power On Successful\n");
-#endif /* CONFIG_MTK_GPUFREQ_V2 */
+	/* xaga: no gpufreq/GPUEB call here. The whole AOC/Buck/MTCMOS/Clock
+	 * sequence is executed locally below so the MCU firmware is never
+	 * asked to run a DVFS command it cannot service.
+	 */
 
 	/* Stock Step 2: Check SPM power & bus status */
 	{
@@ -753,8 +741,9 @@ static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_3);
 
-	/* resume frequency */
-	mtk_common_gpufreq_commit(g_cur_opp_idx);
+	/* xaga: keep the clocks at the rate programmed by
+	 * mt6895_power_on_clocks(); no GPUEB frequency commit.
+	 */
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_4);
 
@@ -767,8 +756,20 @@ static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 	return 0;
 }
 
+static bool xaga_keep_gpu_on;
+module_param(xaga_keep_gpu_on, bool, 0644);
+MODULE_PARM_DESC(xaga_keep_gpu_on,
+		 "Keep the GPU powered after the first power-on (bring-up only)");
+
 static void pm_callback_power_off_nolock(struct kbase_device *kbdev)
 {
+	/* xaga bring-up: re-initialising the CSF firmware on every runtime
+	 * power cycle fails ("Firmware initialization failed"), which leaves
+	 * SurfaceFlinger stuck. Keep the GPU powered instead.
+	 */
+	if (xaga_keep_gpu_on)
+		return;
+
 #if defined(CONFIG_MTK_GPUFREQ_V2)
 	if (mtk_common_gpufreq_bringup())
 		return;
@@ -792,9 +793,6 @@ static void pm_callback_power_off_nolock(struct kbase_device *kbdev)
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_8);
 
-	/* suspend frequency */
-	g_cur_opp_idx = mtk_common_ged_dvfs_get_last_commit_idx();
-
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_9);
 
 	/* check MFG bus if idle */
@@ -803,14 +801,6 @@ static void pm_callback_power_off_nolock(struct kbase_device *kbdev)
 #endif /* CONFIG_MTK_GPUFREQ_V2 */
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_A);
-
-	/* on,off/ SWCG(BG3D)/ MTCMOS/ BUCK */
-#if defined(CONFIG_MTK_GPUFREQ_V2)
-	if (gpufreq_power_control(GPU_PWR_OFF) < 0) {
-		dev_info(kbdev->dev, "GPU PM Callback - Power Off Failed");
-		return;
-	}
-#endif /* CONFIG_MTK_GPUFREQ_V2 */
 
 	/* Symmetric Step: Power off GPU clocks (switch muxes to ref first, then disable PLLs) */
 	mt6895_power_off_clocks(kbdev);
@@ -828,7 +818,7 @@ static int pm_callback_power_on(struct kbase_device *kbdev)
 	mutex_lock(&g_mfg_lock);
 	ret = pm_callback_power_on_nolock(kbdev);
 #if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
-	MTKGPUPower_model_resume();
+	/* xaga: SWPM power model not built */
 #endif
 	mtk_notify_gpu_power_change(1);
 	mutex_unlock(&g_mfg_lock);
@@ -841,7 +831,7 @@ static void pm_callback_power_off(struct kbase_device *kbdev)
 	mutex_lock(&g_mfg_lock);
 	mtk_notify_gpu_power_change(0);
 #if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
-	MTKGPUPower_model_suspend();
+	/* xaga: SWPM power model not built */
 #endif
 	pm_callback_power_off_nolock(kbdev);
 	mutex_unlock(&g_mfg_lock);
@@ -908,3 +898,13 @@ int mtk_platform_device_init(struct kbase_device *kbdev)
 }
 
 void mtk_platform_device_term(struct kbase_device *kbdev) { }
+
+/* r54 platform common expects these two hooks */
+int mtk_platform_pm_init(struct kbase_device *kbdev)
+{
+	return 0;
+}
+
+void mtk_platform_pm_term(struct kbase_device *kbdev)
+{
+}
