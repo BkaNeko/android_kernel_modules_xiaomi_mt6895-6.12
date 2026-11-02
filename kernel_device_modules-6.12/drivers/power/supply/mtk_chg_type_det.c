@@ -354,8 +354,14 @@ static int mtk_ctd_probe(struct platform_device *pdev)
 		mci->bc12_psy[i] = devm_power_supply_get_by_phandle(mci->dev,
 								    name);
 		if (IS_ERR_OR_NULL(mci->bc12_psy[i])) {
-			dev_notice(mci->dev, "Failed to get %s\n", name);
-			ret = -ENODEV;
+			/* xaga: retry instead of failing - mtk_chg_type_det.ko is
+			 * loaded before the subpmic charger/tcpc modules register,
+			 * and a hard -ENODEV leaves BC1.2 dead for the whole boot,
+			 * which keeps the charger at "type:none" and makes the USB
+			 * function re-enumerate in a RESET/SUSPEND loop.
+			 */
+			dev_notice(mci->dev, "Failed to get %s, deferring\n", name);
+			ret = -EPROBE_DEFER;
 			goto out;
 		}
 skip_get_psy:
@@ -365,8 +371,8 @@ skip_get_psy:
 
 		mci->tcpc[i] = tcpc_dev_get_by_name(name);
 		if (!mci->tcpc[i]) {
-			dev_notice(mci->dev, "Failed to get %s\n", name);
-			ret = -ENODEV;
+			dev_notice(mci->dev, "Failed to get %s, deferring\n", name);
+			ret = -EPROBE_DEFER;
 			goto out;
 		}
 

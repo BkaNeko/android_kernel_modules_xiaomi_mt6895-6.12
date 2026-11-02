@@ -53,6 +53,10 @@ ccflags-$(CONFIG_MALI_REAL_HW) += -DCONFIG_MALI_REAL_HW=1
 ccflags-$(CONFIG_MALI_FENCE_DEBUG) += -DCONFIG_MALI_FENCE_DEBUG
 ccflags-$(CONFIG_MALI_DEVFREQ) += -DCONFIG_MALI_DEVFREQ
 ccflags-$(CONFIG_MALI_MTK_DEBUG) += -DCONFIG_MALI_MTK_DEBUG
+# xaga: IS_ENABLED() only sees this when the macro carries a value, so pin it to
+# 1 explicitly.  Enables kbase_prepare_to_reset_gpu_ext() and
+# gpu_reset_entry_name[] so a GPU reset reports which path triggered it.
+ccflags-y += -DCONFIG_MALI_MTK_GPU_RESET_DEBUG=1
 ccflags-$(CONFIG_MALI_MTK_DEBUG_LOGBUF_KBASE) += -DCONFIG_MALI_MTK_DEBUG_LOGBUF_KBASE
 ccflags-$(CONFIG_MALI_MTK_DEBUG_LOGBUF_EXCEPTION) += -DCONFIG_MALI_MTK_DEBUG_LOGBUF_EXCEPTION
 ccflags-$(CONFIG_MALI_MTK_DEBUG_LOGBUF_CSFFW) += -DCONFIG_MALI_MTK_DEBUG_LOGBUF_CSFFW

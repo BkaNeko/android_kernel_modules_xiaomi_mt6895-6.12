@@ -10166,6 +10166,13 @@
 			"EVENT",
 			"PWR";
 		protected-memory-allocator = <&gpu_protected_memory_allocator>;
+		/* xaga: enable kbase's own GPU reset-cause reporting
+		 * (kbase_prepare_to_reset_gpu_ext -> "gpu reset entry: file,func").
+		 * Every bit selects one entry of gpu_reset_entry_name[]; 0x3ffffff
+		 * covers all 26 known triggers so the next reset names itself
+		 * instead of only surfacing to userspace as SW_FAULT_2 (0x72).
+		 */
+		reset-exception-mask = <0x03ffffff>;
 		/* xaga: match the shipping MT6895 6.12 DT (13T): GPU power is
 		 * owned by gpufreq/GPUEB, kbase must not attach to scpsys MFG1.
 		 */
@@ -13291,8 +13298,17 @@
 
 	mtk_ctd: mtk_ctd {
 		compatible = "mediatek,mtk_ctd";
+		/* xaga: the 6.12 charger-type-detection driver looks up
+		 * bc12-sel-portN / bc12-psy-portN / chg-name-portN / nr-port.
+		 * The old 5.10 style (bc12 / bc12-sel) is not parsed, which left
+		 * mtk_ctd without a BC1.2 source: "Failed to get bc12-psy-port0",
+		 * charger type stuck at "none" and no VBUS/cable type for USB.
+		 */
+		nr-port = <1>;
+		chg-name-port0 = "primary_chg";
 		bc12 = <&mt6375_chg>;
-		bc12-sel = <0>;
+		bc12-sel-port0 = <0>;	/* 0 == MTK_CTD_BY_SUBPMIC */
+		bc12-psy-port0 = <&mt6375_chg>;
 	};
 
 	subpmic_pmu_eint: subpmic_pmu_eint {

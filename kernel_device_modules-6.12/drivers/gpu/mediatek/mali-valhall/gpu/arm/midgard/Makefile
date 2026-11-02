@@ -34,6 +34,10 @@ CONFIG_MALI_MTK_GPU_BM_2 := y
 CONFIG_MALI_MTK_GPU_IDLE_TEST := y
 CONFIG_MALI_MTK_MFGSYS_PM := y
 CONFIG_MALI_SCMI_ENABLE := y
+# xaga: report which code path triggered a GPU reset.  Without this the
+# kbase_prepare_to_reset_gpu() wrapper is not compiled and a reset only shows
+# up in userspace as SW_FAULT_2 (0x72) with no indication of the cause.
+CONFIG_MALI_MTK_GPU_RESET_DEBUG := y
 endif
 
 ifeq ($(BUILD_RULE),OOT)
