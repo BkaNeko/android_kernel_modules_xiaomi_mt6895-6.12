@@ -159,6 +159,13 @@ static struct pll_dts *parse_dt(struct platform_device *pdev)
 	return array;
 }
 
+#if IS_ENABLED(CONFIG_COMMON_CLK_MTK_FREQ_HOPPING_MCUPM)
+extern void *get_mcupm_ipidev(void);
+#endif
+#if IS_ENABLED(CONFIG_COMMON_CLK_MTK_FREQ_HOPPING_GPUEB)
+extern void *get_gpueb_ipidev(void);
+#endif
+
 static int NO_OPTIMIZE fh_plt_drv_probe(struct platform_device *pdev)
 {
 	int i;
@@ -169,6 +176,19 @@ static int NO_OPTIMIZE fh_plt_drv_probe(struct platform_device *pdev)
 
 	FHDBG("in\n");
 
+#if IS_ENABLED(CONFIG_COMMON_CLK_MTK_FREQ_HOPPING_MCUPM)
+	if (!get_mcupm_ipidev()) {
+		pr_info("[FHCTL-DIAG] mcupm_ipidev not ready yet, deferring probe\n");
+		return -EPROBE_DEFER;
+	}
+#endif
+#if IS_ENABLED(CONFIG_COMMON_CLK_MTK_FREQ_HOPPING_GPUEB)
+	if (!get_gpueb_ipidev()) {
+		pr_info("[FHCTL-DIAG] gpueb_ipidev not ready yet, deferring probe\n");
+		return -EPROBE_DEFER;
+	}
+#endif
+
 	register_fh_set_rate(mtk_fh_set_rate);
 
 	/* convert dt to data */
@@ -176,7 +196,11 @@ static int NO_OPTIMIZE fh_plt_drv_probe(struct platform_device *pdev)
 
 	/* init every subsys */
 	while (*init_call != NULL) {
-		(*init_call)(array);
+		int ret = (*init_call)(array);
+		if (ret) {
+			pr_warn("[FHCTL-DIAG] subsys_init failed: %d, deferring probe\n", ret);
+			return ret;
+		}
 		init_call++;
 	}
 
@@ -186,11 +210,11 @@ static int NO_OPTIMIZE fh_plt_drv_probe(struct platform_device *pdev)
 		struct fh_hdlr *hdlr = array->hdlr;
 
 		if (!hdlr) {
-			FHDBG("hdlr is NULL!!! <%s,%s,%s>\n",
+			pr_warn("[FHCTL-DIAG] hdlr is NULL for <%s,%s,%s>, deferring probe\n",
 					array->pll_name,
 					array->domain,
 					array->method);
-			return -1;
+			return -EPROBE_DEFER;
 		}
 	}
 

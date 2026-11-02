@@ -310,22 +310,29 @@ static int gpueb_init_v1(struct pll_dts *array, struct match *match)
 
 	if (!ipi_inited) {
 		int ret;
-
+		void *ipidev;
 
 		channel_id = gpueb_get_send_PIN_ID_by_name("IPI_ID_FHCTL");
 		if (channel_id == -1) {
-			FHDBG("get gpueb channel ID fail!");
-			return -1;
+			pr_warn("[FHCTL-DIAG] [GPUEB] get gpueb channel ID fail, deferring\n");
+			return -EPROBE_DEFER;
 		}
-		FHDBG("[GPUEB] ipi_get channel_id: %d\n", channel_id);
+		pr_info("[FHCTL-DIAG] [GPUEB] ipi_get channel_id: %d\n", channel_id);
 
-		ret = mtk_ipi_register(get_gpueb_ipidev(), channel_id, NULL,
+		ipidev = get_gpueb_ipidev();
+		if (!ipidev) {
+			pr_warn("[FHCTL-DIAG] [GPUEB] get_gpueb_ipidev returned NULL, deferring\n");
+			return -EPROBE_DEFER;
+		}
+
+		ret = mtk_ipi_register(ipidev, channel_id, NULL,
 				NULL, (void *)&ack_data);
 		if (ret) {
-			FHDBG("[GPUEB] ipi_register fail, ret %d\n", ret);
-			return -1;
+			pr_err("[FHCTL-DIAG] [GPUEB] ipi_register fail, ret %d\n", ret);
+			return -EPROBE_DEFER;
 		}
 		ipi_inited = true;
+		pr_info("[FHCTL-DIAG] [GPUEB] ipi_register SUCCESS for channel %d\n", channel_id);
 		FHDBG("\n");
 	}
 
@@ -553,7 +560,11 @@ int fhctl_gpueb_init(struct pll_dts *array)
 
 		if (strcmp(method,
 					FHCTL_TARGET) == 0) {
-			(*match)->init(array, *match);
+			int ret = (*match)->init(array, *match);
+			if (ret) {
+				pr_err("[FHCTL-DIAG] [GPUEB] init failed for pll %s: %d\n", array->pll_name, ret);
+				return ret;
+			}
 		}
 	}
 

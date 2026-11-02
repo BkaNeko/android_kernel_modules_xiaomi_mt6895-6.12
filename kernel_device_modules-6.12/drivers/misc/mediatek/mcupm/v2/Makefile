@@ -1,7 +1,10 @@
-#obj-$(CONFIG_MTK_TINYSYS_MCUPM_SUPPORT) += mcupm.o
-#mcupm-objs += mcupm_driver.o
-#mcupm-objs += mcupm_plt.o
-#mcupm-objs += mcupm_logger.o
-#mcupm-objs += mcupm_timesync.o
+# SPDX-License-Identifier: GPL-2.0
+ccflags-y += -I$(DEVICE_MODULES_PATH)/drivers/misc/mediatek/mcupm/include
+ccflags-y += -I$(DEVICE_MODULES_PATH)/drivers/misc/mediatek/mcupm/v2
 
-#ccflags-y += -I$(DEVICE_MODULES_PATH)/drivers/misc/mediatek/mcupm/include
+obj-$(CONFIG_MTK_TINYSYS_MCUPM_SUPPORT) += mcupm.o
+mcupm-y += mcupm_driver.o
+mcupm-y += mcupm_plt.o
+mcupm-y += mcupm_logger.o
+mcupm-y += mcupm_timesync.o
+

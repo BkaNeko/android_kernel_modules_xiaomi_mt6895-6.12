@@ -273,7 +273,7 @@ int mtk_ipi_register(struct mtk_ipi_device *ipidev, int ipi_id,
 {
 	struct mtk_mbox_pin_recv *pin_recv;
 
-	if (!ipidev->ipi_inited)
+	if (!ipidev || !ipidev->ipi_inited)
 		return IPI_DEV_ILLEGAL;
 
 	if (!msg)
@@ -304,7 +304,7 @@ int mtk_ipi_unregister(struct mtk_ipi_device *ipidev, int ipi_id)
 	unsigned long flags = 0;
 	struct mtk_mbox_pin_recv *pin_recv;
 
-	if (!ipidev->ipi_inited)
+	if (!ipidev || !ipidev->ipi_inited)
 		return IPI_DEV_ILLEGAL;
 
 	pin_recv = ipidev->table[ipi_id].pin_recv;
@@ -339,7 +339,7 @@ int mtk_ipi_send(struct mtk_ipi_device *ipidev, int ipi_id,
 	u64 timeover;
 	int ret = 1;
 
-	if (!ipidev->ipi_inited)
+	if (!ipidev || !ipidev->ipi_inited)
 		return IPI_DEV_ILLEGAL;
 
 	pin = ipidev->table[ipi_id].pin_send;
@@ -423,7 +423,7 @@ int mtk_ipi_recv(struct mtk_ipi_device *ipidev, int ipi_id)
 	struct mtk_mbox_pin_recv *pin;
 	int ret = 0;
 
-	if (!ipidev->ipi_inited)
+	if (!ipidev || !ipidev->ipi_inited)
 		return IPI_DEV_ILLEGAL;
 
 	pin = ipidev->table[ipi_id].pin_recv;
@@ -459,7 +459,7 @@ int mtk_ipi_send_compl(struct mtk_ipi_device *ipidev, int ipi_id,
 	u64 timeover;
 	int ret;
 
-	if (!ipidev->ipi_inited)
+	if (!ipidev || !ipidev->ipi_inited)
 		return IPI_DEV_ILLEGAL;
 
 	pin_s = ipidev->table[ipi_id].pin_send;
@@ -591,7 +591,7 @@ int mtk_ipi_recv_reply(struct mtk_ipi_device *ipidev, int ipi_id,
 	unsigned long flags = 0;
 	int ret;
 
-	if (!ipidev->ipi_inited)
+	if (!ipidev || !ipidev->ipi_inited)
 		return IPI_DEV_ILLEGAL;
 
 	pin_r = ipidev->table[ipi_id].pin_recv;

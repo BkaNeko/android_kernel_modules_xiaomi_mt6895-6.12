@@ -309,14 +309,21 @@ static int mcupm_init_v1(struct pll_dts *array, struct match *match)
 
 	if (!ipi_inited) {
 		int ret;
+		void *ipidev = get_mcupm_ipidev();
 
-		ret = mtk_ipi_register(get_mcupm_ipidev(), CH_S_FHCTL, NULL,
+		if (!ipidev) {
+			pr_warn("[FHCTL-DIAG] [MCUPM] get_mcupm_ipidev returned NULL, deferring\n");
+			return -EPROBE_DEFER;
+		}
+
+		ret = mtk_ipi_register(ipidev, CH_S_FHCTL, NULL,
 				NULL, (void *)&ack_data);
 		if (ret) {
-			FHDBG("[MCUPM] ipi_register fail, ret %d\n", ret);
-			return -1;
+			pr_err("[FHCTL-DIAG] [MCUPM] ipi_register fail, ret %d\n", ret);
+			return -EPROBE_DEFER;
 		}
 		ipi_inited = true;
+		pr_info("[FHCTL-DIAG] [MCUPM] ipi_register SUCCESS for CH_S_FHCTL\n");
 		FHDBG("\n");
 	}
 
@@ -571,7 +578,11 @@ int fhctl_mcupm_init(struct pll_dts *array)
 
 		if (strcmp(method,
 					FHCTL_TARGET) == 0) {
-			(*match)->init(array, *match);
+			int ret = (*match)->init(array, *match);
+			if (ret) {
+				pr_err("[FHCTL-DIAG] [MCUPM] init failed for pll %s: %d\n", array->pll_name, ret);
+				return ret;
+			}
 		}
 	}
 

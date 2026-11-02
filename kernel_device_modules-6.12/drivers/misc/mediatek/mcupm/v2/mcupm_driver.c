@@ -278,8 +278,14 @@ static int mcupm_map_memory_region(void)
 
 	rmem = of_reserved_mem_lookup(rmem_node);
 	if (!rmem) {
-		pr_info("[MCUPM] cannot lookup reserved memory\n");
-		return -EINVAL;
+		pr_info("[MCUPM] cannot lookup reserved memory, skipping logger\n");
+		has_reserved_memory = false;
+		skip_logger = true;
+		for (id = 0; id < NUMS_MCUPM_MEM_ID; id++) {
+			mcupm_reserve_mblock[id].start_phys = 0x0;
+			mcupm_reserve_mblock[id].start_virt = 0x0;
+		}
+		return 0;
 	}
 
 	mcupm_mem_base_phys = (phys_addr_t) rmem->base;
