@@ -265,3 +265,86 @@ xaga: power PWR_IRQ_RAWSTAT=… PWR_STATUS=…
   或把 prepower 限定在 `host_pwr_iface==0` 时执行
 - `host_pwr_iface=0` → 直写 PWRON 正确，问题在 MFG 包装层某个序列（对比 5.10 的
   `0x13fbf0xx` 初值）
+
+## 10. 根因（round 3）：官方 GPU 电源序列被移除，MTCMOS/BUCK 从未执行
+
+### 对照 5.10（同芯片、能正常工作）
+
+```c
+/* 5.10 r54-test, platform/mt6895/mali_kbase_config_mt6895.c */
+if (!gpufreq_power_ctrl_enable()) { ... return 0; }
+...
+/* on,off/ SWCG(BG3D)/ MTCMOS/ BUCK */
+if (gpufreq_power_control(GPU_PWR_ON) < 0) { ... }
+```
+
+### 我们 6.12 的版本
+
+```c
+/* xaga: no gpufreq/GPUEB call here. The whole AOC/Buck/MTCMOS/Clock
+ * sequence is executed locally below ... */
+```
+
+往下实际只有 **读** SPM/INFRACFG/MFGRPC 状态做打印 + 手写时钟序列
+（`mt6895_power_on_clocks`）与 `mt6895_pdca_config`。**没有任何代码真正打开
+MTCMOS 电源域或设置 BUCK 电压。**
+
+`grep gpufreq_power_control` 在 6.12 platform 文件里只有一行注释命中。
+
+### 后果链
+
+```
+5.10: gpufreq_power_control(GPU_PWR_ON)
+        → SWCG(BG3D) → MTCMOS → BUCK 按官方顺序
+我们: 只开时钟，MTCMOS/BUCK 未执行
+  → GPU 的电源状态机停在未完成状态（PWR_STATUS 不匹配 / L2 未真正上电）
+  → GPU_COMMAND(FLUSH_CACHES) 被丢弃
+  → CLEAN_CACHES_COMPLETED(bit17) 永不置位
+  ├─ 内核 busy_wait_cache_operation() 超时 → GPU reset
+  └─ 固件 0x809e00 死循环 → CSFFW Oops → CSHWIF0..3 关闭
+```
+
+旁证：6.12 代码里留着 `xaga_keep_gpu_on` 参数与注释
+> "re-initialising the CSF firmware on every runtime power cycle fails
+>  ('Firmware initialization failed')"
+
+—— 正是电源序列不完整导致断电/上电后 GPU 无法回到确定状态，才被迫用
+"永不关 GPU"来绕过。
+
+### 修复
+
+`platform/mt6895/mali_kbase_config_mt6895.c`：
+
+```c
+/* 上电 */
+if (!mtk_common_gpufreq_bringup()) {
+    int pwr_ret = gpufreq_power_control(GPU_PWR_ON);
+    dev_info(kbdev->dev, "xaga: gpufreq_power_control(ON) = %d\n", pwr_ret);
+}
+
+/* 下电（对称） */
+if (!mtk_common_gpufreq_bringup()) {
+    int pwr_ret = gpufreq_power_control(GPU_PWR_OFF);
+    dev_info(kbdev->dev, "xaga: gpufreq_power_control(OFF) = %d\n", pwr_ret);
+}
+```
+
+`gpufreq_power_control()` 的行为（`gpufreq/v2/gpufreq_v2.c:833`）：
+
+- `gpufreq_power_ctrl_enable()` 为假 → 直接返回成功；
+- GPUEB 就绪 → 走 IPI `CMD_POWER_CONTROL` 交给 GPUEB；
+- 否则 → 调用 AP 侧 `gpufreq_fp->power_control()`（SWCG/MTCMOS/BUCK）。
+
+即：**GPUEB 没起来时会自动回落到 AP 路径**，正是 bring-up 阶段需要的。
+
+已验证：`mali_kbase_mt6895.ko` 出现未定义符号 `U gpufreq_power_control`，
+`check_syms` 0 unresolved，`modules.load` 中 `mtk_gpufreq_mt6895`(207) 早于
+`mali_kbase_mt6895`(230)。
+
+### 下轮判据
+
+```
+xaga: gpufreq_power_control(ON) = 0        ← 官方序列执行成功
+xaga: cache-clean stuck …                  ← 应消失
+Firmware hang detected                     ← 应为 0
+```

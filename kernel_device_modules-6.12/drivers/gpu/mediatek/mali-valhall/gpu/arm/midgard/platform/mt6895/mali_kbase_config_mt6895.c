@@ -21,6 +21,7 @@
 #include "platform/mtk_platform_common.h"
 #include <ged_dvfs.h>
 #include <mtk_gpufreq.h>
+#include <gpufreq_v2.h>
 #include <mtk_gpu_utility.h>
 #if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
 #include <mboot_params.h>
@@ -608,10 +609,21 @@ static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_1);
 
-	/* xaga: no gpufreq/GPUEB call here. The whole AOC/Buck/MTCMOS/Clock
-	 * sequence is executed locally below so the MCU firmware is never
-	 * asked to run a DVFS command it cannot service.
+	/* xaga: run the official MTK GPU power sequence (SWCG/BG3D -> MTCMOS ->
+	 * BUCK).  The port used to skip gpufreq_power_control() and only program
+	 * clocks by hand, so MTCMOS was never switched on and the GPU never left
+	 * its power/reset state machine.  The CSF firmware then spins forever on
+	 * GPU_IRQ_RAWSTAT.CLEAN_CACHES_COMPLETED (PC 0x809e00) and raises CSFFW
+	 * Oops.  When GPUEB is not ready this falls back to the AP-side platform
+	 * callback, which is exactly what we need during bring-up.
 	 */
+	if (!mtk_common_gpufreq_bringup()) {
+		int pwr_ret = gpufreq_power_control(GPU_PWR_ON);
+
+		dev_info(kbdev->dev, "xaga: gpufreq_power_control(ON) = %d\n", pwr_ret);
+		if (pwr_ret < 0)
+			dev_err(kbdev->dev, "xaga: gpufreq GPU_PWR_ON failed (%d)\n", pwr_ret);
+	}
 
 	/* Stock Step 2: Check SPM power & bus status */
 	{
@@ -807,6 +819,18 @@ static void pm_callback_power_off_nolock(struct kbase_device *kbdev)
 
 	/* Preserve PDCv2 active power control on power down */
 	mt6895_pdca_config(kbdev, false);
+
+	/* xaga: mirror of the power-on path - hand the GPU back to MTK's
+	 * sequence (clocks -> MTCMOS -> BUCK).  Keeping this symmetric is what
+	 * makes a power cycle leave the GPU in a defined state again; without
+	 * it the next CSF firmware boot failed with "Firmware initialization
+	 * failed", which is why xaga_keep_gpu_on had to be introduced.
+	 */
+	if (!mtk_common_gpufreq_bringup()) {
+		int pwr_ret = gpufreq_power_control(GPU_PWR_OFF);
+
+		dev_info(kbdev->dev, "xaga: gpufreq_power_control(OFF) = %d\n", pwr_ret);
+	}
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_B);
 }
