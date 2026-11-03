@@ -67,6 +67,26 @@ MODULE_PARM_DESC(mali_skip_mcu_on_clk_fail, "Refuse to boot MCU if PLLs or muxes
 
 uint mali_hw_seq_mask = 7;
 module_param(mali_hw_seq_mask, uint, 0644);
+
+/* xaga: value returned to kbase from the power-on callback.
+ *   enum kbase_gpu_state { GPU_STATE_INTACT = 0, GPU_STATE_LOST, GPU_STATE_IN_RESET }
+ * kbase_pm_driver reacts to it:
+ *   GPU_STATE_IN_RESET -> kbase_pm_init_hw(PM_ENABLE_IRQS | PM_NO_RESET)
+ *   GPU_STATE_LOST     -> kbase_pm_init_hw(PM_ENABLE_IRQS)
+ *   GPU_STATE_INTACT   -> nothing at all
+ * Our clock off/on sequence clears hardware state, so claiming INTACT (0)
+ * meant COHERENCY_ENABLE / L2_MMU_CONFIG / IRQ masks were never rewritten
+ * after a power cycle - and the very next cache flush timed out:
+ *   16.044 Clock off, then on
+ *   16.686 CLEAN_CACHES_COMPLETED timeout
+ * The 5.10 driver for this chip returns 2 here.  Default to that, but keep it
+ * writable so both values can be A/B tested without reflashing.
+ */
+static int xaga_pwr_state = 2;
+module_param(xaga_pwr_state, int, 0644);
+MODULE_PARM_DESC(xaga_pwr_state,
+		 "GPU state reported from power-on: 0=INTACT, 1=LOST, 2=IN_RESET (default 2)");
+
 MODULE_PARM_DESC(mali_hw_seq_mask, "Bitmask for stock GPU power-on sequences: bit0=I2M, bit1=DCM, bit2=ACP (default 7)");
 
 static bool g_mfg_clocks_enabled = false;
@@ -765,7 +785,10 @@ static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_5);
 
-	return 0;
+	dev_info(kbdev->dev, "xaga: power-on reporting GPU state %d\n",
+		 xaga_pwr_state);
+
+	return xaga_pwr_state;
 }
 
 static bool xaga_keep_gpu_on;
