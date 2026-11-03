@@ -109,12 +109,10 @@ int kbase_set_mmu_quirks(struct kbase_device *kbdev)
 
 	kbdev->hw_quirks_mmu = mmu_config;
 
-	if (kbdev->system_coherency == COHERENCY_ACE ||
-	    kbdev->system_coherency == COHERENCY_ACE_LITE) {
+	if (kbdev->system_coherency == COHERENCY_ACE) {
 		/* Allow memory configuration disparity to be ignored,
 		 * we optimize the use of shared memory and thus we
 		 * expect some disparity in the memory configuration.
-		 * xaga: ACE_LITE (MT6895 native mode) needs this as well.
 		 */
 		kbdev->hw_quirks_mmu |= L2_MMU_CONFIG_ALLOW_SNOOP_DISPARITY;
 	}

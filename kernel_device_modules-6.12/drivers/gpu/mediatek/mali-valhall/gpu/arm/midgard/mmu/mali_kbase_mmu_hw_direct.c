@@ -309,15 +309,6 @@ static int wait_cores_power_trans_complete(struct kbase_device *kbdev)
  *
  * Return: 0 if the WA was successfully applied, non-zero otherwise.
  */
-#if IS_ENABLED(CONFIG_MALI_CSF_SUPPORT)
-#include <csf/mali_kbase_csf_firmware.h>
-static bool mali_skip_as0_wa;
-module_param(mali_skip_as0_wa, bool, 0644);
-MODULE_PARM_DESC(mali_skip_as0_wa,
-		 "Skip GPU2019_3901 workaround on MCU address space (AS0)");
-
-#endif
-
 static int apply_hw_issue_GPU2019_3901_wa(struct kbase_device *kbdev, u32 *mmu_cmd,
 					  unsigned int as_nr)
 {
@@ -584,14 +575,8 @@ int kbase_mmu_hw_do_flush(struct kbase_device *kbdev, struct kbase_as *as,
 
 #if !IS_ENABLED(CONFIG_MALI_NO_MALI)
 	/* WA for the KBASE_HW_ISSUE_GPU2019_3901. */
-#if IS_ENABLED(CONFIG_MALI_CSF_SUPPORT)
-	if (kbase_hw_has_issue(kbdev, KBASE_HW_ISSUE_GPU2019_3901) &&
-	    mmu_cmd == AS_COMMAND_COMMAND_FLUSH_MEM &&
-	    (!mali_skip_as0_wa || as->number != MCU_AS_NR)) {
-#else
 	if (kbase_hw_has_issue(kbdev, KBASE_HW_ISSUE_GPU2019_3901) &&
 	    mmu_cmd == AS_COMMAND_COMMAND_FLUSH_MEM) {
-#endif
 		ret = apply_hw_issue_GPU2019_3901_wa(kbdev, &mmu_cmd, as->number);
 		if (ret) {
 			dev_warn(

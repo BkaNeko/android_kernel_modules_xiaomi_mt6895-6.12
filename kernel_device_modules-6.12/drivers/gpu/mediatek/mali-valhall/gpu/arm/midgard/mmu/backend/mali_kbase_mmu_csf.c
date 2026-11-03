@@ -845,21 +845,6 @@ static void submit_work_gpufault(struct kbase_device *kbdev, u32 status, u32 as_
 void kbase_mmu_gpu_fault_interrupt(struct kbase_device *kbdev, u32 status, u32 as_nr, u64 address,
 				   bool as_valid)
 {
-	/* xaga: gpu fault detail.  Without this the only visible symptom is the
-	 * WARN in submit_work_gpufault (queue_work already pending), which says
-	 * nothing about which address space or which address faulted.
-	 */
-	{
-		static DEFINE_RATELIMIT_STATE(xaga_gpuf_rate, 2 * HZ, 3);
-
-		if (__ratelimit(&xaga_gpuf_rate))
-			dev_err(kbdev->dev,
-				"xaga: gpu fault status=0x%08x as=%u (%s) addr=0x%llx as_valid=%d\n",
-				status, as_nr,
-				as_nr == MCU_AS_NR ? "MCU/firmware" : "user",
-				address, as_valid);
-	}
-
 	if (!as_valid || (as_nr == MCU_AS_NR)) {
 		int as;
 

@@ -509,89 +509,9 @@ static void enable_mcu(struct kbase_device *kbdev)
 	kbase_reg_write32(kbdev, GPU_CONTROL_ENUM(MCU_CONTROL), MCU_CONTROL_REQ_AUTO);
 }
 
-/*
- * xaga: the r54 platform layer (5.10 vintage) does not carry the power-up
- * workaround the 6.12 stack needed. Without pre-powering STACK/SHADER/TILER
- * the MCU never completes firmware boot ("Timed out waiting for fw boot
- * completion") and EGL ends up with no usable configs. Raw offsets are used
- * because the r54 regmap enum does not expose the power registers.
- */
-#define XAGA_STACK_PRESENT_LO	0xE00
-#define XAGA_STACK_READY_LO	0xE10
-#define XAGA_STACK_PWRON_LO	0xE20
-#define XAGA_STACK_PWRTRANS_LO	0xE40
-#define XAGA_SHADER_PRESENT_LO	0x100
-#define XAGA_SHADER_READY_LO	0x140
-#define XAGA_SHADER_PWRON_LO	0x180
-#define XAGA_SHADER_PWRTRANS_LO	0x200
-#define XAGA_TILER_PRESENT_LO	0x110
-#define XAGA_TILER_READY_LO	0x150
-#define XAGA_TILER_PWRON_LO	0x190
-#define XAGA_TILER_PWRTRANS_LO	0x210
-#define XAGA_GPU_IRQ_CLEAR	0x024
-#define XAGA_MCU_GPU_IRQ_CLEAR	0x3024
-
-/* xaga: this was a bring-up hack from when the EB power path was dead.  It
- * writes STACK/SHADER/TILER_PWRON directly, while kbase's own legacy PM path
- * (has_host_pwr_iface == 0 on MT6895) drives the same registers - two writers
- * left POWER_CHANGED_SINGLE|ALL latched in GPU_IRQ_RAWSTAT.  Now that
- * gpufreq_power_control() reaches the EB it is no longer needed, so default it
- * off.  Keep the parameter for A/B testing.
- */
-static bool xaga_prepower;
-module_param(xaga_prepower, bool, 0644);
-MODULE_PARM_DESC(xaga_prepower,
-		 "Pre-power STACK/SHADER/TILER before MCU boot (default 0)");
-
-static void xaga_prepower_cores(struct kbase_device *kbdev)
-{
-	void __iomem *base = kbdev->reg;
-	u32 st_pres = readl(base + XAGA_STACK_PRESENT_LO);
-	u32 sh_pres = readl(base + XAGA_SHADER_PRESENT_LO);
-	u32 ti_pres = readl(base + XAGA_TILER_PRESENT_LO);
-	int i;
-
-	dev_info(kbdev->dev,
-		 "xaga: prepower STACK=0x%08x SHADER=0x%08x TILER=0x%08x\n",
-		 st_pres, sh_pres, ti_pres);
-
-	if (st_pres)
-		writel(st_pres, base + XAGA_STACK_PWRON_LO);
-	if (sh_pres)
-		writel(sh_pres, base + XAGA_SHADER_PWRON_LO);
-	if (ti_pres)
-		writel(ti_pres, base + XAGA_TILER_PWRON_LO);
-
-	for (i = 0; i < 1000; i++) {
-		u32 st_rdy = readl(base + XAGA_STACK_READY_LO);
-		u32 sh_rdy = readl(base + XAGA_SHADER_READY_LO);
-		u32 ti_rdy = readl(base + XAGA_TILER_READY_LO);
-		u32 st_tr = readl(base + XAGA_STACK_PWRTRANS_LO);
-		u32 sh_tr = readl(base + XAGA_SHADER_PWRTRANS_LO);
-		u32 ti_tr = readl(base + XAGA_TILER_PWRTRANS_LO);
-
-		if (st_rdy == st_pres && sh_rdy == sh_pres &&
-		    ti_rdy == ti_pres && !st_tr && !sh_tr && !ti_tr)
-			break;
-		udelay(10);
-	}
-
-	/* Drop latched power/status interrupts on both host and MCU interfaces,
-	 * otherwise the MCU firmware boot handshake can be missed.
-	 */
-	writel(0xFFFFFFFF, base + XAGA_GPU_IRQ_CLEAR);
-	writel(0xFFFFFFFF, base + XAGA_MCU_GPU_IRQ_CLEAR);
-
-	dev_info(kbdev->dev, "xaga: prepower settled in %dus, IRQs cleared\n",
-		 i * 10);
-}
-
 static void boot_csf_firmware(struct kbase_device *kbdev)
 {
 	kbasep_hwcnt_init_on_boot(kbdev);
-
-	if (xaga_prepower)
-		xaga_prepower_cores(kbdev);
 
 	enable_mcu(kbdev);
 

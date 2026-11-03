@@ -108,16 +108,6 @@ static int pte_is_valid(u64 pte, int const level)
 /*
  * Map KBASE_REG flags to MMU flags
  */
-uint mali_strip_share;
-module_param(mali_strip_share, uint, 0644);
-/* xaga: strip share bits only for user contexts; the MCU firmware address
- * space must keep them or the firmware fails its version check.
- */
-bool xaga_strip_share_active;
-EXPORT_SYMBOL(xaga_strip_share_active);
-MODULE_PARM_DESC(mali_strip_share,
-		 "Strip shareable PTE bits (1 = force non-shareable PTEs)");
-
 static u64 get_mmu_flags(unsigned long flags)
 {
 	u64 mmu_flags;
@@ -136,14 +126,12 @@ static u64 get_mmu_flags(unsigned long flags)
 	/* nx if requested */
 	mmu_flags |= (flags & KBASE_REG_GPU_NX) ? ENTRY_NX_BIT : 0;
 
-	if (!mali_strip_share || !xaga_strip_share_active) {
-		if (flags & KBASE_REG_SHARE_BOTH) {
-			/* inner and outer shareable */
-			mmu_flags |= SHARE_BOTH_BITS;
-		} else if (flags & KBASE_REG_SHARE_IN) {
-			/* inner shareable coherency */
-			mmu_flags |= SHARE_INNER_BITS;
-		}
+	if (flags & KBASE_REG_SHARE_BOTH) {
+		/* inner and outer shareable */
+		mmu_flags |= SHARE_BOTH_BITS;
+	} else if (flags & KBASE_REG_SHARE_IN) {
+		/* inner shareable coherency */
+		mmu_flags |= SHARE_INNER_BITS;
 	}
 
 	return mmu_flags;

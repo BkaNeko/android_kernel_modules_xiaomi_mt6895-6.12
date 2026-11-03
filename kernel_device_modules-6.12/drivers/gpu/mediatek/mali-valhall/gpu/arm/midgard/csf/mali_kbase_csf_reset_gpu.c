@@ -906,13 +906,7 @@ bool kbase_prepare_to_reset_gpu_ext(struct kbase_device *kbdev, unsigned int fla
 #endif /* CONFIG_MALI_MTK_DEBUG_DUMP */
 					}
 					kbase_csf_firmware_log_dump_buffer(kbdev);
-					/* xaga: upstream BUG_ON(1) here so that the masked
-					 * reset trigger is unmissable.  We only want the
-					 * diagnostic, not a panic loop on every boot.
-					 */
-					pr_err("xaga: gpu reset triggered by entry %d (%s), file %s\n",
-					       idx, gpu_reset_entry_name[idx], file);
-					dump_stack();
+					BUG_ON(1);
 				}
 			}
 		}
