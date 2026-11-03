@@ -3,609 +3,72 @@
  * Copyright (c) 2021 MediaTek Inc.
  */
 
-#include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/device.h>
 #include <linux/delay.h>
 #include <linux/spinlock.h>
-#include <linux/moduleparam.h>
-#include <linux/regulator/consumer.h>
-#include <linux/of_platform.h>
-#include <linux/clk.h>
+#include <linux/pm_qos.h>
+#include <linux/pm_runtime.h>
+#include <linux/arm-smccc.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
+#include <device/mali_kbase_device.h>
 #include <mali_kbase.h>
 #include <mali_kbase_defs.h>
 #include <mali_kbase_config.h>
 #include "mali_kbase_config_platform.h"
-#include "platform/mtk_platform_common.h"
+#include <platform/mtk_platform_utils.h>
+#include <platform/mtk_platform_common.h>
+#include <platform/mtk_platform_common/mtk_platform_debug.h>
 #include <ged_dvfs.h>
+#include <mtk_ddk_define.h>  /* MTK_INLINE */
+#if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
+#include "platform/mtk_platform_common/mtk_ltr_pmu.h"
+#endif
+#if IS_ENABLED(CONFIG_MALI_MTK_AUTOSUSPEND_DELAY) || IS_ENABLED(CONFIG_MALI_MTK_ADAPTIVE_POWER_POLICY)
+#include <ged_kpi.h>
+#include <ged_notify_sw_vsync.h>
+#endif
 #include <mtk_gpufreq.h>
-#include <gpufreq_v2.h>
 #include <mtk_gpu_utility.h>
-#include <linux/kmod.h>
-#include <linux/workqueue.h>
 #if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
 #include <mboot_params.h>
+#endif /* CONFIG_MTK_AEE_IPANIC */
+
+#if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && \
+    IS_ENABLED(CONFIG_MALI_MTK_DVFS_POLICY) && \
+    IS_ENABLED(CONFIG_MALI_MTK_GPU_DVFS_HINT_26M_LOADING)
+#include <platform/mtk_platform_common/mtk_platform_dvfs_hint_26m_perf_cnting.h>
+#include "platform/mtk_platform_common/mtk_platform_dvfs_hint_26m_perf_cnting_ex.h"
+#define TOP_BASE        (0x13FBF000)
+#define DVFS_TOP_BASE       (0x13FBB000)
+#endif /* CONFIG_MALI_MIDGARD_DVFS && CONFIG_MALI_MTK_DVFS_POLICY && CONFIG_MALI_MTK_GPU_DVFS_HINT_26M_LOADING*/
+
+/* KBASE_PLATFORM_DEBUG_ENABLE, 1 for debug log enable, 0 for disable */
+#define KBASE_PLATFORM_DEBUG_ENABLE  (0)
+
+/* KBASE_PLATFORM_SUSPEND_DELAY, the ms for autosuspend timeout */
+#define KBASE_PLATFORM_SUSPEND_DELAY (100) /* ms */
+#if IS_ENABLED(CONFIG_MALI_MTK_AUTOSUSPEND_DELAY)
+#define KBASE_PLATFORM_MAX_SUSPEND_DELAY (25) /* ms */
+#define KBASE_PLATFORM_MIN_SUSPEND_DELAY (10) /* ms */
 #endif
-#if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
-#include <mtk_gpu_power_sspm_ipi.h>
+#if IS_ENABLED(CONFIG_MALI_MTK_AUTOSUSPEND_DELAY) || IS_ENABLED(CONFIG_MALI_MTK_ADAPTIVE_POWER_POLICY)
+static int gInit_autosuspend_delay_ms = KBASE_PLATFORM_SUSPEND_DELAY;
+static int gAutosuspend_delay_ms = 0;
 #endif
 
-#ifndef POWER_ON
-#define POWER_ON GPU_PWR_ON
-#endif
-#ifndef POWER_OFF
-#define POWER_OFF GPU_PWR_OFF
-#endif
-
-static inline void gpufreq_set_timestamp(void)
-{
-	/* Valhall CSF on MT6895 handles timestamps via internal hardware CSF timers */
-}
-
-static inline void gpufreq_check_bus_idle(void)
-{
-	/* Bus idle checking on MT6895 is handled by MTCMOS/SPM inside gpufreq_power_control */
-}
+#if IS_ENABLED(CONFIG_MALI_MTK_ACP_DSU_REQ)
+static int gIsDsuRequested = 0;
+spinlock_t g_dsu_request_lock;
+#endif /* CONFIG_MALI_MTK_ACP_DSU_REQ */
 
 DEFINE_MUTEX(g_mfg_lock);
-static int g_cur_opp_idx;
-static bool mfg_qchannel_enable;
-module_param(mfg_qchannel_enable, bool, 0644);
-MODULE_PARM_DESC(mfg_qchannel_enable, "Enable MFG_ACTIVE_SEL bit0 in MFG_QCHANNEL_CON (0x13FBF0B4)");
 
-static bool mali_enable_pdca = true;
-module_param(mali_enable_pdca, bool, 0644);
-MODULE_PARM_DESC(mali_enable_pdca, "Enable MediaTek PDCv2 active power control in MFG_TOP_CONFIG (0x13FBF000)");
-
-static bool mali_enable_pll_clocks = true;
-module_param(mali_enable_pll_clocks, bool, 0644);
-MODULE_PARM_DESC(mali_enable_pll_clocks, "Enable MFGPLL and MFGSCPLL and switch CLK_CFG_30 muxes (Run 78)");
-
-bool mali_skip_mcu_on_clk_fail = true;
-module_param(mali_skip_mcu_on_clk_fail, bool, 0644);
-MODULE_PARM_DESC(mali_skip_mcu_on_clk_fail, "Refuse to boot MCU if PLLs or muxes are not verified ready");
-
-uint mali_hw_seq_mask = 7;
-module_param(mali_hw_seq_mask, uint, 0644);
-
-/* xaga: value returned to kbase from the power-on callback.
- *   enum kbase_gpu_state { GPU_STATE_INTACT = 0, GPU_STATE_LOST, GPU_STATE_IN_RESET }
- * kbase_pm_driver reacts to it:
- *   GPU_STATE_IN_RESET -> kbase_pm_init_hw(PM_ENABLE_IRQS | PM_NO_RESET)
- *   GPU_STATE_LOST     -> kbase_pm_init_hw(PM_ENABLE_IRQS)
- *   GPU_STATE_INTACT   -> nothing at all
- * Our clock off/on sequence clears hardware state, so claiming INTACT (0)
- * meant COHERENCY_ENABLE / L2_MMU_CONFIG / IRQ masks were never rewritten
- * after a power cycle - and the very next cache flush timed out:
- *   16.044 Clock off, then on
- *   16.686 CLEAN_CACHES_COMPLETED timeout
- * The 5.10 driver for this chip returns 2 here.  Default to that, but keep it
- * writable so both values can be A/B tested without reflashing.
- */
-/* xaga: run the power path exactly like the 5.10 r54 driver for this chip.
- *
- * 5.10 pm_callback_power_on_nolock() does, in order:
- *     gpufreq_power_control(GPU_PWR_ON)      - SWCG -> MTCMOS -> BUCK on the EB
- *     mtk_common_pm_mfg_active()
- *     mtk_common_gpufreq_commit(ged_dvfs_get_last_commit_idx())
- *     ged_dvfs_gpu_clock_switch_notify(GED_POWER_ON)
- *     return 2 (GPU_STATE_IN_RESET)
- * and touches none of the hand-written clock/PDCA/MFG sequences this port added.
- * Now that GPUEB IPI works the EB performs the power sequence itself, so those
- * extra steps are at best redundant and at worst fight the EB.  Default off so
- * the current behaviour is unchanged; enable to A/B against the 5.10 reference.
- */
-static bool mali_stock_pm;
-module_param(mali_stock_pm, bool, 0644);
-MODULE_PARM_DESC(mali_stock_pm,
-		 "Follow the 5.10 r54 power sequence exactly (skip local clock/PDCA/MFG steps)");
-
-static int xaga_pwr_state = 2;
-module_param(xaga_pwr_state, int, 0644);
-MODULE_PARM_DESC(xaga_pwr_state,
-		 "GPU state reported from power-on: 0=INTACT, 1=LOST, 2=IN_RESET (default 2)");
-
-MODULE_PARM_DESC(mali_hw_seq_mask, "Bitmask for stock GPU power-on sequences: bit0=I2M, bit1=DCM, bit2=ACP (default 7)");
-
-static bool g_mfg_clocks_enabled = false;
-
-struct mt6895_gpu_clocks {
-	struct clk *bg3d;          /* mfgcfg_bg3d */
-	struct clk *pll_main;      /* mfg_ao_mfgpll */
-	struct clk *pll_sc;        /* mfgsc_ao_mfgscpll */
-	struct clk *mux_0;         /* mfg_sel_0 */
-	struct clk *mux_1;         /* mfg_sel_1 */
-	struct clk *parent_main;   /* mfgpll_ck */
-	struct clk *parent_sc;     /* mfgscpll_ck */
-	struct clk *parent_sub;    /* mfg_ref_ck */
-	struct clk *parent_sc_sub; /* mfgsc_ref_ck */
-};
-static struct mt6895_gpu_clocks g_gpu_clks;
-static bool g_gpu_clks_acquired = false;
-
-static void mt6895_acquire_clocks(struct kbase_device *kbdev)
-{
-	if (g_gpu_clks_acquired)
-		return;
-
-	g_gpu_clks.bg3d = devm_clk_get_optional(kbdev->dev, "mfgcfg_bg3d");
-	g_gpu_clks.pll_main = devm_clk_get_optional(kbdev->dev, "mfg_ao_mfgpll");
-	if (IS_ERR_OR_NULL(g_gpu_clks.pll_main))
-		g_gpu_clks.pll_main = clk_get(NULL, "mfg_ao_mfgpll");
-
-	g_gpu_clks.pll_sc = devm_clk_get_optional(kbdev->dev, "mfgsc_ao_mfgscpll");
-	if (IS_ERR_OR_NULL(g_gpu_clks.pll_sc))
-		g_gpu_clks.pll_sc = clk_get(NULL, "mfgsc_ao_mfgscpll");
-
-	g_gpu_clks.mux_0 = devm_clk_get_optional(kbdev->dev, "mfg_sel_0");
-	g_gpu_clks.mux_1 = devm_clk_get_optional(kbdev->dev, "mfg_sel_1");
-
-	g_gpu_clks.parent_main = devm_clk_get_optional(kbdev->dev, "mfgpll_ck");
-	if (IS_ERR_OR_NULL(g_gpu_clks.parent_main))
-		g_gpu_clks.parent_main = clk_get(NULL, "mfgpll_ck");
-
-	g_gpu_clks.parent_sc = devm_clk_get_optional(kbdev->dev, "mfgscpll_ck");
-	if (IS_ERR_OR_NULL(g_gpu_clks.parent_sc))
-		g_gpu_clks.parent_sc = clk_get(NULL, "mfgscpll_ck");
-
-	g_gpu_clks.parent_sub = devm_clk_get_optional(kbdev->dev, "mfg_ref_ck");
-	if (IS_ERR_OR_NULL(g_gpu_clks.parent_sub))
-		g_gpu_clks.parent_sub = clk_get(NULL, "mfg_ref_ck");
-
-	g_gpu_clks.parent_sc_sub = devm_clk_get_optional(kbdev->dev, "mfgsc_ref_ck");
-	if (IS_ERR_OR_NULL(g_gpu_clks.parent_sc_sub))
-		g_gpu_clks.parent_sc_sub = clk_get(NULL, "mfgsc_ref_ck");
-
-	dev_info(kbdev->dev,
-		"[CSF CLK ACQUIRE] bg3d=%p pll_main=%p pll_sc=%p mux0=%p mux1=%p parent_main=%p parent_sc=%p sub0=%p sub1=%p\n",
-		g_gpu_clks.bg3d, g_gpu_clks.pll_main, g_gpu_clks.pll_sc,
-		g_gpu_clks.mux_0, g_gpu_clks.mux_1,
-		g_gpu_clks.parent_main, g_gpu_clks.parent_sc,
-		g_gpu_clks.parent_sub, g_gpu_clks.parent_sc_sub);
-
-	g_gpu_clks_acquired = true;
-}
-
-static unsigned int mt6895_get_fmeter(void __iomem *con0_addr, void __iomem *con1_addr)
-{
-	u32 val = 0, ckgen_load_cnt = 0, ckgen_k1 = 0;
-	int i = 0;
-	unsigned int freq = 0;
-
-	writel(0x00FF0000, con1_addr);
-	val = readl(con0_addr);
-	writel((val & 0x00FFFFFF), con0_addr);
-	writel(0x00009000, con0_addr);
-
-	ckgen_load_cnt = readl(con1_addr) >> 16;
-	ckgen_k1 = readl(con0_addr) >> 24;
-
-	val = readl(con0_addr);
-	writel((val | 0x1010), con0_addr);
-
-	/* wait fmeter finish */
-	while (readl(con0_addr) & 0x10) {
-		udelay(10);
-		i++;
-		if (i > 1000) {
-			pr_err("[CSF CLK FMETER] wait Fmeter timeout\n");
-			break;
-		}
-	}
-
-	val = readl(con1_addr) & 0xFFFF;
-	/* KHz */
-	freq = (val * 26000 * (ckgen_k1 + 1)) / (ckgen_load_cnt + 1);
-	return freq;
-}
-
-static unsigned int mt6895_calc_pll_rate(void __iomem *con1_addr)
-{
-	u32 mfgpll = readl(con1_addr);
-	u32 pcw = mfgpll & 0x3FFFFF;
-	u32 posdiv_power = (mfgpll & (0x7 << 24)) >> 24;
-
-	return (((pcw * 10 + 5) * 26) >> 14) / (1 << posdiv_power) * 100;
-}
-
-static int mt6895_power_on_clocks(struct kbase_device *kbdev)
-{
-	int ret = 0;
-	void __iomem *mfg_pll_base;
-	void __iomem *topck;
-	u32 pll0_con0, pll0_con3, pll1_con0, pll1_con3, clk_cfg_30;
-	int i;
-
-	if (g_mfg_clocks_enabled)
-		return 0;
-
-	mt6895_acquire_clocks(kbdev);
-
-	if (!mali_enable_pll_clocks) {
-		dev_info(kbdev->dev, "[CSF CLK] PLL activation skipped (mali_enable_pll_clocks=0)\n");
-		return 0;
-	}
-
-	dev_info(kbdev->dev, "[CSF CLK] Starting stock-ordered GPU clock power-on sequence...\n");
-
-	/* Stock Step 1: Enable BG3D clock gate */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.bg3d)) {
-		ret = clk_prepare_enable(g_gpu_clks.bg3d);
-		dev_info(kbdev->dev, "[CSF CLK] clk_prepare_enable(bg3d) = %d\n", ret);
-	}
-
-	/* Stock Step 2: Enable MFGPLL via CCF */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.pll_main)) {
-		ret = clk_prepare_enable(g_gpu_clks.pll_main);
-		dev_info(kbdev->dev, "[CSF CLK] clk_prepare_enable(pll_main) = %d\n", ret);
-	}
-
-	/* Stock Step 3: Enable MFGSCPLL via CCF */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.pll_sc)) {
-		ret = clk_prepare_enable(g_gpu_clks.pll_sc);
-		dev_info(kbdev->dev, "[CSF CLK] clk_prepare_enable(pll_sc) = %d\n", ret);
-	}
-
-	/* Stock Step 4: Hardware verification & assert fallback for PLLs */
-	mfg_pll_base = ioremap(0x13fa0000, 0x1000);
-	if (mfg_pll_base) {
-		/* MFGPLL_CON0 at 0x8, MFGPLL_CON3 at 0x14 */
-		pll0_con0 = readl(mfg_pll_base + 0x8);
-		pll0_con3 = readl(mfg_pll_base + 0x14);
-		/* MFGSCPLL_CON0 at 0xc08, MFGSCPLL_CON3 at 0xc14 */
-		pll1_con0 = readl(mfg_pll_base + 0xc08);
-		pll1_con3 = readl(mfg_pll_base + 0xc14);
-
-		dev_info(kbdev->dev,
-			"[CSF CLK RAW] PRE: MFGPLL CON0=0x%08x CON3=0x%08x | MFGSC CON0=0x%08x CON3=0x%08x\n",
-			pll0_con0, pll0_con3, pll1_con0, pll1_con3);
-
-		/* If bit 0 of CON0 is not set, assert hardware enable directly */
-		if (!(pll0_con0 & BIT(0))) {
-			dev_info(kbdev->dev, "[CSF CLK HW] Asserting MFGPLL hardware enable\n");
-			writel(readl(mfg_pll_base + 0x14) | BIT(0), mfg_pll_base + 0x14); /* PWR_ON */
-			udelay(1);
-			writel(readl(mfg_pll_base + 0x14) & ~BIT(1), mfg_pll_base + 0x14); /* Clear ISO */
-			udelay(1);
-			writel(readl(mfg_pll_base + 0x8) | BIT(0), mfg_pll_base + 0x8); /* EN */
-		}
-
-		if (!(pll1_con0 & BIT(0))) {
-			dev_info(kbdev->dev, "[CSF CLK HW] Asserting MFGSCPLL hardware enable\n");
-			writel(readl(mfg_pll_base + 0xc14) | BIT(0), mfg_pll_base + 0xc14); /* PWR_ON */
-			udelay(1);
-			writel(readl(mfg_pll_base + 0xc14) & ~BIT(1), mfg_pll_base + 0xc14); /* Clear ISO */
-			udelay(1);
-			writel(readl(mfg_pll_base + 0xc08) | BIT(0), mfg_pll_base + 0xc08); /* EN */
-		}
-
-		/* Poll for lock / analog settle (up to 1 ms) */
-		for (i = 0; i < 20; i++) {
-			udelay(50);
-			pll0_con0 = readl(mfg_pll_base + 0x8);
-			pll1_con0 = readl(mfg_pll_base + 0xc08);
-			if ((pll0_con0 & BIT(0)) && (pll1_con0 & BIT(0)))
-				break;
-		}
-
-		pll0_con3 = readl(mfg_pll_base + 0x14);
-		pll1_con3 = readl(mfg_pll_base + 0xc14);
-		dev_info(kbdev->dev,
-			"[CSF CLK RAW] POST: MFGPLL CON0=0x%08x CON3=0x%08x | MFGSC CON0=0x%08x CON3=0x%08x (loops=%d)\n",
-			pll0_con0, pll0_con3, pll1_con0, pll1_con3, i);
-
-		iounmap(mfg_pll_base);
-	}
-
-	/* Stock Step 5: Switch Muxes via CCF clk_set_parent natively */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.mux_0) && !IS_ERR_OR_NULL(g_gpu_clks.parent_main)) {
-		ret = clk_set_parent(g_gpu_clks.mux_0, g_gpu_clks.parent_main);
-		dev_info(kbdev->dev, "[CSF CLK] clk_set_parent(mux_0 -> mfgpll_ck) = %d\n", ret);
-		if (ret) {
-			dev_err(kbdev->dev, "[CSF CLK ERROR] clk_set_parent(mux_0) failed: %d\n", ret);
-			if (mali_skip_mcu_on_clk_fail)
-				return ret;
-		}
-	}
-	if (!IS_ERR_OR_NULL(g_gpu_clks.mux_1) && !IS_ERR_OR_NULL(g_gpu_clks.parent_sc)) {
-		ret = clk_set_parent(g_gpu_clks.mux_1, g_gpu_clks.parent_sc);
-		dev_info(kbdev->dev, "[CSF CLK] clk_set_parent(mux_1 -> mfgscpll_ck) = %d\n", ret);
-		if (ret) {
-			dev_err(kbdev->dev, "[CSF CLK ERROR] clk_set_parent(mux_1) failed: %d\n", ret);
-			if (mali_skip_mcu_on_clk_fail)
-				return ret;
-		}
-	}
-
-	/* Stock Step 6: Verify CLK_CFG_30 (Read-only verification of CCF latch, no raw SET writes!) */
-	topck = ioremap(0x10000000, 0x1000);
-	if (topck) {
-		clk_cfg_30 = readl(topck + 0x1f0);
-		dev_info(kbdev->dev,
-			"[CSF CLK] CLK_CFG_30 read-back: 0x%08x (bits 16:17 = %u:%u)\n",
-			clk_cfg_30, (clk_cfg_30 >> 16) & 1, (clk_cfg_30 >> 17) & 1);
-
-		if (!((clk_cfg_30 >> 16) & 1) || !((clk_cfg_30 >> 17) & 1)) {
-			dev_err(kbdev->dev, "[CSF CLK ERROR] CLK_CFG_30 bits 16:17 != 1:1 after CCF parent switch!\n");
-			if (mali_skip_mcu_on_clk_fail) {
-				iounmap(topck);
-				return -EIO;
-			}
-		}
-		iounmap(topck);
-	}
-
-	/* Log CCF post-switch rates */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.mux_0) && !IS_ERR_OR_NULL(g_gpu_clks.mux_1)) {
-		dev_info(kbdev->dev,
-			"[CSF CLK CCF] mux_0: rate=%lu Hz | mux_1: rate=%lu Hz\n",
-			clk_get_rate(g_gpu_clks.mux_0),
-			clk_get_rate(g_gpu_clks.mux_1));
-	}
-
-	/* Stock Step 7: Measure Physical Hardware Frequencies via Fmeter & CON1 */
-	mfg_pll_base = ioremap(0x13fa0000, 0x1000);
-	if (mfg_pll_base) {
-		u32 fgpu_fmeter = mt6895_get_fmeter(mfg_pll_base + 0x040, mfg_pll_base + 0x044);
-		u32 fstack_fmeter = mt6895_get_fmeter(mfg_pll_base + 0xc40, mfg_pll_base + 0xc44);
-		u32 fgpu_calc = mt6895_calc_pll_rate(mfg_pll_base + 0x00c);
-		u32 fstack_calc = mt6895_calc_pll_rate(mfg_pll_base + 0xc0c);
-
-		dev_info(kbdev->dev,
-			"[CSF CLK FMETER] MFGPLL: calc=%u kHz, fmeter=%u kHz | MFGSCPLL: calc=%u kHz, fmeter=%u kHz\n",
-			fgpu_calc, fgpu_fmeter, fstack_calc, fstack_fmeter);
-		iounmap(mfg_pll_base);
-	}
-
-	udelay(50);
-	g_mfg_clocks_enabled = true;
-	dev_info(kbdev->dev, "[CSF CLK] GPU clock power-on sequence completed successfully!\n");
-	return 0;
-}
-
-static void mt6895_power_off_clocks(struct kbase_device *kbdev)
-{
-	void __iomem *topck;
-	u32 clk_cfg_30;
-
-	if (!g_mfg_clocks_enabled)
-		return;
-
-	dev_info(kbdev->dev, "[CSF CLK] Starting symmetric GPU clock power-off sequence...\n");
-
-	/* Step 1: Switch CCF parents back to ref first */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.mux_0) && !IS_ERR_OR_NULL(g_gpu_clks.parent_sub)) {
-		int ret = clk_set_parent(g_gpu_clks.mux_0, g_gpu_clks.parent_sub);
-		if (ret)
-			dev_warn(kbdev->dev, "[CSF CLK] clk_set_parent(mux_0 -> ref) returned %d\n", ret);
-	}
-	if (!IS_ERR_OR_NULL(g_gpu_clks.mux_1) && !IS_ERR_OR_NULL(g_gpu_clks.parent_sc_sub)) {
-		int ret = clk_set_parent(g_gpu_clks.mux_1, g_gpu_clks.parent_sc_sub);
-		if (ret)
-			dev_warn(kbdev->dev, "[CSF CLK] clk_set_parent(mux_1 -> ref) returned %d\n", ret);
-	}
-
-	/* Step 2: Read-back CLK_CFG_30 to verify switch to ref */
-	topck = ioremap(0x10000000, 0x1000);
-	if (topck) {
-		clk_cfg_30 = readl(topck + 0x1f0);
-		dev_info(kbdev->dev,
-			"[CSF CLK] CLK_CFG_30 after switch to ref: 0x%08x (bits 16:17 = %u:%u)\n",
-			clk_cfg_30, (clk_cfg_30 >> 16) & 1, (clk_cfg_30 >> 17) & 1);
-		iounmap(topck);
-	}
-
-	udelay(20);
-
-	/* Step 3: Disable PLLs */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.pll_sc))
-		clk_disable_unprepare(g_gpu_clks.pll_sc);
-	if (!IS_ERR_OR_NULL(g_gpu_clks.pll_main))
-		clk_disable_unprepare(g_gpu_clks.pll_main);
-
-	/* Step 4: Disable BG3D clock gate */
-	if (!IS_ERR_OR_NULL(g_gpu_clks.bg3d))
-		clk_disable_unprepare(g_gpu_clks.bg3d);
-
-	g_mfg_clocks_enabled = false;
-	dev_info(kbdev->dev, "[CSF CLK] Symmetric GPU clock power-off completed.\n");
-}
-
-static void mt6895_pdca_config(struct kbase_device *kbdev, bool power_on)
-{
-	void __iomem *mfg_top;
-	int i;
-
-	if (!mali_enable_pdca) {
-		dev_info(kbdev->dev, "[CSF PDC] PDCv2 config skipped (mali_enable_pdca=0)\n");
-		return;
-	}
-
-	mfg_top = ioremap(0x13fbf000, 0x1000);
-	if (!mfg_top) {
-		dev_err(kbdev->dev, "[CSF PDC] Failed to ioremap MFG_TOP_CONFIG (0x13fbf000)\n");
-		return;
-	}
-
-	if (power_on) {
-		/* Step 1: Read-before-write logging (physical stacks 0, 1, 4, 5 on MT6895) */
-		dev_info(kbdev->dev,
-			"[CSF PDC BEFORE] CG=0x%08x ST0=0x%08x ST1=0x%08x ST4=0x%08x ST5=0x%08x\n",
-			readl(mfg_top + 0x100), readl(mfg_top + 0x120), readl(mfg_top + 0x140),
-			readl(mfg_top + 0xC0),  readl(mfg_top + 0x98));
-
-		dev_info(kbdev->dev,
-			"[CSF PDC BEFORE SC0..5] 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
-			readl(mfg_top + 0x400), readl(mfg_top + 0x418), readl(mfg_top + 0x430),
-			readl(mfg_top + 0x448), readl(mfg_top + 0x460), readl(mfg_top + 0x478));
-
-		dev_info(kbdev->dev,
-			"[CSF PDC BEFORE RSV0..5] 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
-			readl(mfg_top + 0x404), readl(mfg_top + 0x41C), readl(mfg_top + 0x434),
-			readl(mfg_top + 0x44C), readl(mfg_top + 0x464), readl(mfg_top + 0x47C));
-
-		/* Step 2: Vendor sequence for PDCv2 power-on (__gpufreq_pdca_config) */
-		/* Shader cores 0..5 active_pwrctl_en (bit 0) - Mali-G610 MC6 has 6 cores */
-		for (i = 0; i < 6; i++) {
-			u32 ofs = 0x400 + i * 0x18;
-			writel(readl(mfg_top + ofs) | BIT(0), mfg_top + ofs);
-		}
-
-		/* Clock gating active_pwrctl_en (bit 0) */
-		writel(readl(mfg_top + 0x100) | BIT(0), mfg_top + 0x100);
-
-		/* Physical shader stacks st0, st1, st4, st5 active_pwrctl_en (bit 0) */
-		writel(readl(mfg_top + 0x120) | BIT(0), mfg_top + 0x120);
-		writel(readl(mfg_top + 0x140) | BIT(0), mfg_top + 0x140);
-		writel(readl(mfg_top + 0xC0)  | BIT(0), mfg_top + 0xC0);
-		writel(readl(mfg_top + 0x98)  | BIT(0), mfg_top + 0x98);
-
-		/* Shader cores 0..5 active_pwrctl_rsv (bit 31) */
-		for (i = 0; i < 6; i++) {
-			u32 ofs = 0x404 + i * 0x18;
-			writel(readl(mfg_top + ofs) | BIT(31), mfg_top + ofs);
-		}
-
-		/* Step 3: Read-after-write logging */
-		dev_info(kbdev->dev,
-			"[CSF PDC AFTER] CG=0x%08x ST0=0x%08x ST1=0x%08x ST4=0x%08x ST5=0x%08x\n",
-			readl(mfg_top + 0x100), readl(mfg_top + 0x120), readl(mfg_top + 0x140),
-			readl(mfg_top + 0xC0),  readl(mfg_top + 0x98));
-
-		dev_info(kbdev->dev,
-			"[CSF PDC AFTER SC0..5] 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
-			readl(mfg_top + 0x400), readl(mfg_top + 0x418), readl(mfg_top + 0x430),
-			readl(mfg_top + 0x448), readl(mfg_top + 0x460), readl(mfg_top + 0x478));
-
-		dev_info(kbdev->dev,
-			"[CSF PDC AFTER RSV0..5] 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x 0x%08x\n",
-			readl(mfg_top + 0x404), readl(mfg_top + 0x41C), readl(mfg_top + 0x434),
-			readl(mfg_top + 0x44C), readl(mfg_top + 0x464), readl(mfg_top + 0x47C));
-	} else {
-		dev_info(kbdev->dev, "[CSF PDC] Preserving PDCv2 active_pwrctl on power off\n");
-	}
-
-	iounmap(mfg_top);
-}
-
-static void mt6895_apply_stock_hw_sequences(struct kbase_device *kbdev)
-{
-	void __iomem *mfg_top;
-	void __iomem *mfg_rpc;
-	u32 val;
-
-	if (!mali_hw_seq_mask) {
-		dev_info(kbdev->dev, "[CSF HW-SEQ] Skipping stock hardware sequences (mali_hw_seq_mask=0)\n");
-		return;
-	}
-
-	mfg_top = ioremap(0x13fbf000, 0x1000);
-	if (!mfg_top) {
-		dev_err(kbdev->dev, "[CSF HW-SEQ] Failed to ioremap MFG_TOP_CONFIG (0x13fbf000)\n");
-		return;
-	}
-
-	dev_info(kbdev->dev, "[CSF HW-SEQ] Applying stock sequences with mask=0x%x\n", mali_hw_seq_mask);
-
-	/* Bit 0: I2M Protector sequence (MFG_I2M_PROTECTOR_CFG_00 GPM_ENABLE) */
-	if (mali_hw_seq_mask & BIT(0)) {
-		dev_info(kbdev->dev, "[CSF HW-SEQ] Executing I2M Protector sequence (bit 0)\n");
-		writel(0x20300316, mfg_top + 0xF60);
-		writel(0x1800000C, mfg_top + 0xF64);
-		writel(0x01010802, mfg_top + 0xF68);
-		writel(0x000227F3, mfg_top + 0xFA8);
-		udelay(10);
-		writel(0x20300317, mfg_top + 0xF60); /* bit 0 = GPM_ENABLE */
-		dev_info(kbdev->dev, "[CSF HW-SEQ] I2M 0xF60=0x%08x 0xF64=0x%08x 0xF68=0x%08x 0xFA8=0x%08x\n",
-			readl(mfg_top + 0xF60), readl(mfg_top + 0xF64),
-			readl(mfg_top + 0xF68), readl(mfg_top + 0xFA8));
-	}
-
-	/* Bit 1: DCM sequence (MFG_DCM_CON_0, MFG_GLOBAL_CON, MFG_QCHANNEL_CON, MFG_RPC_AO_CLK_CFG) */
-	if (mali_hw_seq_mask & BIT(1)) {
-		dev_info(kbdev->dev, "[CSF HW-SEQ] Executing DCM sequence (bit 1)\n");
-		/* 0x13FBF010: MFG_DCM_CON_0 (mask 0x3FF7F -> 0xC03F) */
-		val = readl(mfg_top + 0x010);
-		val = (val & ~0x3FF7F) | 0xC03F;
-		writel(val, mfg_top + 0x010);
-
-		/* 0x13FBF024: MFG_ASYNC_CON_1 (bit 0 set) */
-		val = readl(mfg_top + 0x024);
-		val |= BIT(0);
-		writel(val, mfg_top + 0x024);
-
-		/* 0x13FBF0B0: MFG_GLOBAL_CON (clear bits 8, 9, 10, 19) */
-		val = readl(mfg_top + 0x0B0);
-		val &= ~0x80700;
-		writel(val, mfg_top + 0x0B0);
-
-		/* 0x13FBF0B4: MFG_QCHANNEL_CON (set bit 4) */
-		val = readl(mfg_top + 0x0B4);
-		val |= BIT(4);
-		writel(val, mfg_top + 0x0B4);
-
-		/* 0x13F91034: MFG_RPC_AO_CLK_CFG in RPC block (clear bit 0) */
-		mfg_rpc = ioremap(0x13f90000, 0x2000);
-		if (mfg_rpc) {
-			val = readl(mfg_rpc + 0x1034);
-			val &= ~BIT(0);
-			writel(val, mfg_rpc + 0x1034);
-			dev_info(kbdev->dev, "[CSF HW-SEQ] DCM: MFG_RPC_AO_CLK_CFG(0x13F91034)=0x%08x\n",
-				readl(mfg_rpc + 0x1034));
-
-			/* Clear MFGRPC AXI bus protect for MFG1 (bits 16..19 and bits 0..3) */
-			writel(0x000f000f, mfg_rpc + 0x1044);
-			mb();
-			udelay(10);
-			dev_info(kbdev->dev, "[CSF HW-SEQ] MFGRPC AXI PROT cleared: en=0x%08x rdy=0x%08x\n",
-				readl(mfg_rpc + 0x1040), readl(mfg_rpc + 0x1048));
-
-			iounmap(mfg_rpc);
-		} else {
-			dev_err(kbdev->dev, "[CSF HW-SEQ] Failed to ioremap MFG_RPC (0x13f90000)\n");
-		}
-	}
-
-	/* Bit 2: ACP sequence (Coherency Port: 0x168, 0x8E0..0x928 from disassembly) */
-	if (mali_hw_seq_mask & BIT(2)) {
-		u32 b168, b8e0, b8e8, b900, b908, b910, b918, b920, b928;
-
-		dev_info(kbdev->dev, "[CSF HW-SEQ] Executing ACP coherency sequence (bit 2)\n");
-
-		b168 = readl(mfg_top + 0x168);
-		b8e0 = readl(mfg_top + 0x8E0);
-		b8e8 = readl(mfg_top + 0x8E8);
-		b910 = readl(mfg_top + 0x910);
-		b918 = readl(mfg_top + 0x918);
-		b900 = readl(mfg_top + 0x900);
-		b908 = readl(mfg_top + 0x908);
-		b920 = readl(mfg_top + 0x920);
-		b928 = readl(mfg_top + 0x928);
-
-		dev_info(kbdev->dev, "[CSF HW-SEQ] ACP BEFORE: 168=%08x 8e0=%08x 8e8=%08x 900=%08x 908=%08x 910=%08x 918=%08x 920=%08x 928=%08x\n",
-			b168, b8e0, b8e8, b900, b908, b910, b918, b920, b928);
-
-		writel(b168 | 0xF,   mfg_top + 0x168);
-		writel(b8e0 | 0x855, mfg_top + 0x8E0);
-		writel(b8e8 | 0x855, mfg_top + 0x8E8);
-		writel(b910 | 0x855, mfg_top + 0x910);
-		writel(b918 | 0x855, mfg_top + 0x918);
-		writel(b900 | 0x55,  mfg_top + 0x900);
-		writel(b908 | 0x55,  mfg_top + 0x908);
-		writel(b920 | 0x55,  mfg_top + 0x920);
-		writel(b928 | 0x55,  mfg_top + 0x928);
-
-		dev_info(kbdev->dev, "[CSF HW-SEQ] ACP AFTER:  168=%08x 8e0=%08x 8e8=%08x 900=%08x 908=%08x 910=%08x 918=%08x 920=%08x 928=%08x\n",
-			readl(mfg_top + 0x168), readl(mfg_top + 0x8E0), readl(mfg_top + 0x8E8),
-			readl(mfg_top + 0x900), readl(mfg_top + 0x908),
-			readl(mfg_top + 0x910), readl(mfg_top + 0x918),
-			readl(mfg_top + 0x920), readl(mfg_top + 0x928));
-	}
-
-	iounmap(mfg_top);
-}
+//FIXME
+static int g_curFreqID;
+static int g_is_suspend;
 
 enum gpu_dvfs_status_step {
 	GPU_DVFS_STATUS_STEP_1 = 0x1,
@@ -640,253 +103,76 @@ static inline void gpu_dvfs_status_reset_footprint(void)
 #endif
 }
 
-/* xaga: capture dmesg into /data so a black screen still leaves evidence.
- *
- * The whole bring-up loop depended on adb, which may not come up when the
- * display never gets pixels.  /data is shared across kernels, so a log written
- * here can be read after booting the working 5.10 image again
- * (/data/local/tmp/xaga_6.12_last.log).  It runs from a workqueue because
- * call_usermodehelper() must not be used from the locked/atomic paths where the
- * interesting failures happen.
- */
-static bool xaga_log_saver_started;
-static void xaga_log_saver_fn(struct work_struct *work);
-static DECLARE_DELAYED_WORK(xaga_log_saver, xaga_log_saver_fn);
-static bool xaga_log_save_enable = true;
-module_param(xaga_log_save_enable, bool, 0644);
-MODULE_PARM_DESC(xaga_log_save_enable,
-		 "Periodically copy dmesg to /data/local/tmp (default on)");
-
-static void xaga_log_saver_fn(struct work_struct *work)
-{
-	char *argv[] = { "/system/bin/sh", "-c",
-		"dmesg > /data/local/tmp/xaga_6.12_last.log 2>/dev/null",
-		NULL };
-	char *envp[] = { "HOME=/", "PATH=/sbin:/system/bin:/system/xbin", NULL };
-
-	if (!xaga_log_save_enable)
-		return;
-
-	call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
-	schedule_delayed_work(&xaga_log_saver, msecs_to_jiffies(15000));
-}
-
 static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 {
-	if (mtk_common_pm_is_mfg_active())
+dev_dbg(kbdev->dev, "%s\n", __func__);
+	if (mtk_common_gpufreq_bringup()) {
+		mtk_common_pm_mfg_active();
 		return 0;
+	}
 
-	dev_vdbg(kbdev->dev, "GPU PM Callback - Active");
+	if (!gpufreq_power_ctrl_enable()) {
+		mtk_common_pm_mfg_active();
+#if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && IS_ENABLED(CONFIG_MALI_MTK_DVFS_POLICY)
+		ged_dvfs_gpu_clock_switch_notify(GED_POWER_ON);
+#endif
+		return 0;
+	}
+
+ if (mtk_common_pm_is_mfg_active()){
+	 return 0;
+ }
+	dev_dbg(kbdev->dev, "GPU PM Callback - Active");
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_1);
 
-	/* xaga: run the official MTK GPU power sequence (SWCG/BG3D -> MTCMOS ->
-	 * BUCK).  The port used to skip gpufreq_power_control() and only program
-	 * clocks by hand, so MTCMOS was never switched on and the GPU never left
-	 * its power/reset state machine.  The CSF firmware then spins forever on
-	 * GPU_IRQ_RAWSTAT.CLEAN_CACHES_COMPLETED (PC 0x809e00) and raises CSFFW
-	 * Oops.  When GPUEB is not ready this falls back to the AP-side platform
-	 * callback, which is exactly what we need during bring-up.
-	 */
-	if (!mtk_common_gpufreq_bringup()) {
-		int pwr_ret = gpufreq_power_control(GPU_PWR_ON);
+    if (g_is_suspend == 1) {
+        KBASE_PLATFORM_LOGI("%s, discard powering on since GPU is suspended", __func__);
+        return 0;
+    }
 
-		dev_info(kbdev->dev, "xaga: gpufreq_power_control(ON) = %d\n", pwr_ret);
-		if (pwr_ret < 0)
-			dev_err(kbdev->dev, "xaga: gpufreq GPU_PWR_ON failed (%d)\n", pwr_ret);
+	/* on,off/ SWCG(BG3D)/ MTCMOS/ BUCK */
+	if (gpufreq_power_control(GPU_PWR_ON) < 0) {
+		KBASE_PLATFORM_LOGE("Power On Failed");
+		return 1;
 	}
-
-	if (mali_stock_pm) {
-		/* 5.10 parity: the EB already sequenced the rails and clocks. */
-		mtk_common_pm_mfg_active();
-		mtk_common_gpufreq_commit(mtk_common_ged_dvfs_get_last_commit_idx());
-		ged_dvfs_gpu_clock_switch_notify(1);
-		dev_info(kbdev->dev,
-			 "xaga: 5.10 parity power-on, reporting GPU state %d\n",
-			 xaga_pwr_state);
-		return xaga_pwr_state;
-	}
-
-	/* Stock Step 2: Check SPM power & bus status */
-	{
-		void __iomem *spm = ioremap(0x1c001000, 0x1000);
-		if (spm) {
-			u32 mfg0 = readl(spm + 0xeb8);
-			u32 mfg1 = readl(spm + 0xebc);
-			u32 xpu = readl(spm + 0xf3c);
-			dev_info(kbdev->dev, "GPU PM: SPM PWR_CON MFG0=0x%08x MFG1=0x%08x XPU=0x%08x\n",
-				mfg0, mfg1, xpu);
-			iounmap(spm);
-		}
-		void __iomem *mfg_top = ioremap(0x13fbf000, 0x1000);
-		if (mfg_top) {
-			u32 sta = readl(mfg_top + 0x0);
-			u32 qch_before = readl(mfg_top + 0xb4);
-			if (mfg_qchannel_enable) {
-				writel(qch_before | BIT(0), mfg_top + 0xb4);
-			}
-			u32 qch_after = readl(mfg_top + 0xb4);
-			dev_info(kbdev->dev, "GPU PM: mfg_top_config sta=0x%08x (BG3D bit0 %s), QCHANNEL_CON before=0x%08x after=0x%08x (mfg_qchannel_enable=%d)\n",
-				sta, (sta & 1) ? "GATED" : "UNGATED", qch_before, qch_after, mfg_qchannel_enable);
-			if (sta & 1) {
-				dev_info(kbdev->dev, "GPU PM: ungating BG3D via clr register\n");
-				writel(BIT(0), mfg_top + 0x8); /* clr_ofs = 0x8 */
-				sta = readl(mfg_top + 0x0);
-				dev_info(kbdev->dev, "GPU PM: mfg_top_config sta after ungate=0x%08x\n", sta);
-			}
-			iounmap(mfg_top);
-		}
-		void __iomem *infra = ioremap(0x10001000, 0x1000);
-		if (infra) {
-			u32 md0_en = readl(infra + 0xca0);
-			u32 md0_rdy = readl(infra + 0xcac);
-			u32 emi0_en = readl(infra + 0xc60);
-			u32 emi0_rdy = readl(infra + 0xc6c);
-			u32 emi1_en = readl(infra + 0xc70);
-			u32 emi1_rdy = readl(infra + 0xc7c);
-
-			dev_info(kbdev->dev, "GPU PM: INFRACFG MD0_MFG1 en=0x%08x rdy=0x%08x | EMISYS0 en=0x%08x rdy=0x%08x | EMISYS1 en=0x%08x rdy=0x%08x\n",
-				md0_en, md0_rdy, emi0_en, emi0_rdy, emi1_en, emi1_rdy);
-			iounmap(infra);
-		}
-		void __iomem *mfgrpc = ioremap(0x13f91000, 0x1000);
-		if (mfgrpc) {
-			u32 rpc_en_pre = readl(mfgrpc + 0x40);
-			u32 rpc_rdy_pre = readl(mfgrpc + 0x48);
-
-			/* Clear MFGRPC AXI bus protect for MFG1 (bits 16..19 and bits 0..3) */
-			writel(0x000f000f, mfgrpc + 0x44);
-			mb();
-			udelay(10);
-
-			u32 rpc_en_post = readl(mfgrpc + 0x40);
-			u32 rpc_rdy_post = readl(mfgrpc + 0x48);
-			dev_info(kbdev->dev, "GPU PM: MFGRPC PRE en=0x%08x rdy=0x%08x | POST-CLR en=0x%08x rdy=0x%08x\n",
-				rpc_en_pre, rpc_rdy_pre, rpc_en_post, rpc_rdy_post);
-			iounmap(mfgrpc);
-		}
-	}
-
-	/* Stock Step 3: Ensure all 3 regulators are powered and at active operating voltages */
-	{
-		struct regulator *vstack_reg = devm_regulator_get_optional(kbdev->dev, "_vstack");
-		struct regulator *vcore_reg = devm_regulator_get_optional(kbdev->dev, "_vcore");
-		struct regulator *vsram_reg = devm_regulator_get_optional(kbdev->dev, "_vsram");
-
-		if (IS_ERR_OR_NULL(vstack_reg) || IS_ERR_OR_NULL(vcore_reg) || IS_ERR_OR_NULL(vsram_reg)) {
-			struct device_node *gnode = of_find_node_by_name(NULL, "gpufreq");
-			if (gnode) {
-				struct platform_device *gpdev = of_find_device_by_node(gnode);
-				if (gpdev) {
-					if (IS_ERR_OR_NULL(vstack_reg))
-						vstack_reg = regulator_get_optional(&gpdev->dev, "_vstack");
-					if (IS_ERR_OR_NULL(vcore_reg))
-						vcore_reg = regulator_get_optional(&gpdev->dev, "_vcore");
-					if (IS_ERR_OR_NULL(vsram_reg))
-						vsram_reg = regulator_get_optional(&gpdev->dev, "_vsram");
-				}
-				of_node_put(gnode);
-			}
-		}
-
-		int reg_ret;
-
-		if (!IS_ERR_OR_NULL(vcore_reg)) {
-			/* Leave voltage to mmdvfs shared SoC rail, ensure enabled */
-			reg_ret = regulator_enable(vcore_reg);
-			dev_info(kbdev->dev, "GPU PM: _vcore regulator = %d uV (en_ret=%d)\n",
-				regulator_get_voltage(vcore_reg), reg_ret);
-		}
-		if (!IS_ERR_OR_NULL(vsram_reg)) {
-			reg_ret = regulator_set_voltage(vsram_reg, 750000, 800000);
-			reg_ret = regulator_enable(vsram_reg);
-			dev_info(kbdev->dev, "GPU PM: _vsram regulator = %d uV (en_ret=%d)\n",
-				regulator_get_voltage(vsram_reg), reg_ret);
-		}
-		if (!IS_ERR_OR_NULL(vstack_reg)) {
-			reg_ret = regulator_set_voltage(vstack_reg, 687500, 750000);
-			reg_ret = regulator_enable(vstack_reg);
-			dev_info(kbdev->dev, "GPU PM: _vstack regulator = %d uV (en_ret=%d)\n",
-				regulator_get_voltage(vstack_reg), reg_ret);
-		}
-	}
-
-	/* Stock Step 4: Execute stock-ordered clock activation (PLLs + Muxes) */
-	if (mt6895_power_on_clocks(kbdev) < 0) {
-		dev_err(kbdev->dev, "GPU PM: mt6895_power_on_clocks failed!\n");
-		if (mali_skip_mcu_on_clk_fail)
-			return -EIO;
-	}
-
-	/* Stock Step 5: Configure MediaTek PDCv2 for Mali hardware automatic MTCMOS power control */
-	mt6895_pdca_config(kbdev, true);
-
-	/* Stock Step 6: Apply stock MMIO power-on sequences (I2M, DCM, ACP) */
-	mt6895_apply_stock_hw_sequences(kbdev);
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_2);
-
-#if defined(CONFIG_MTK_GPUFREQ_V2)
-	gpufreq_set_timestamp();
-#endif /* CONFIG_MTK_GPUFREQ_V2 */
 
 	/* set a flag to enable GPU DVFS */
 	mtk_common_pm_mfg_active();
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_3);
 
-	/* xaga: keep the clocks at the rate programmed by
-	 * mt6895_power_on_clocks(); no GPUEB frequency commit.
-	 */
+	/* resume frequency */
+	mtk_common_gpufreq_commit(g_curFreqID);
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_4);
 
 #if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && IS_ENABLED(CONFIG_MALI_MTK_DVFS_POLICY)
-	ged_dvfs_gpu_clock_switch_notify(1);
+	ged_dvfs_gpu_clock_switch_notify(GED_POWER_ON);
 #endif
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_5);
-
-	dev_info(kbdev->dev, "xaga: power-on reporting GPU state %d\n",
-		 xaga_pwr_state);
-
-	/* start the periodic dmesg capture once, on the first power-on */
-	if (xaga_log_save_enable && !xaga_log_saver_started) {
-		xaga_log_saver_started = true;
-		schedule_delayed_work(&xaga_log_saver, msecs_to_jiffies(5000));
-	}
-
-	return xaga_pwr_state;
+	return 2;
 }
-
-static bool xaga_keep_gpu_on;
-module_param(xaga_keep_gpu_on, bool, 0644);
-MODULE_PARM_DESC(xaga_keep_gpu_on,
-		 "Keep the GPU powered after the first power-on (bring-up only)");
 
 static void pm_callback_power_off_nolock(struct kbase_device *kbdev)
 {
-	/* xaga bring-up: re-initialising the CSF firmware on every runtime
-	 * power cycle fails ("Firmware initialization failed"), which leaves
-	 * SurfaceFlinger stuck. Keep the GPU powered instead.
-	 */
-	if (xaga_keep_gpu_on)
-		return;
-
-#if defined(CONFIG_MTK_GPUFREQ_V2)
+dev_dbg(kbdev->dev, "%s\n", __func__);
 	if (mtk_common_gpufreq_bringup())
 		return;
-#endif /* CONFIG_MTK_GPUFREQ_V2 */
 
-	if (!mtk_common_pm_is_mfg_active())
+	if (!gpufreq_power_ctrl_enable())
 		return;
 
-	dev_vdbg(kbdev->dev, "GPU PM Callback - Idle");
+	if (!mtk_common_pm_is_mfg_active())
+        return;
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_6);
 
 #if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && IS_ENABLED(CONFIG_MALI_MTK_DVFS_POLICY)
-	ged_dvfs_gpu_clock_switch_notify(0);
+	ged_dvfs_gpu_clock_switch_notify(GED_POWER_OFF);
 #endif
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_7);
@@ -896,48 +182,33 @@ static void pm_callback_power_off_nolock(struct kbase_device *kbdev)
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_8);
 
+	/* suspend frequency */
+	g_curFreqID = mtk_common_ged_dvfs_get_last_commit_idx();
+
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_9);
 
-	/* check MFG bus if idle */
-#if defined(CONFIG_MTK_GPUFREQ_V2)
-	gpufreq_check_bus_idle();
-#endif /* CONFIG_MTK_GPUFREQ_V2 */
+
+	/* on,off/ SWCG(BG3D)/ MTCMOS/ BUCK */
+	if (gpufreq_power_control(GPU_PWR_OFF) < 0) {
+		KBASE_PLATFORM_LOGE("Power Off Failed");
+		return;
+	}
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_A);
-
-	if (!mali_stock_pm) {
-		/* Symmetric Step: power off GPU clocks (muxes to ref, then PLLs) */
-		mt6895_power_off_clocks(kbdev);
-
-		/* Preserve PDCv2 active power control on power down */
-		mt6895_pdca_config(kbdev, false);
-	}
-
-	/* xaga: mirror of the power-on path - hand the GPU back to MTK's
-	 * sequence (clocks -> MTCMOS -> BUCK).  Keeping this symmetric is what
-	 * makes a power cycle leave the GPU in a defined state again; without
-	 * it the next CSF firmware boot failed with "Firmware initialization
-	 * failed", which is why xaga_keep_gpu_on had to be introduced.
-	 */
-	if (!mtk_common_gpufreq_bringup()) {
-		int pwr_ret = gpufreq_power_control(GPU_PWR_OFF);
-
-		dev_info(kbdev->dev, "xaga: gpufreq_power_control(OFF) = %d\n", pwr_ret);
-	}
-
-	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_B);
 }
 
 static int pm_callback_power_on(struct kbase_device *kbdev)
 {
-	int ret = 0;
+	int ret = 1;
 
 	mutex_lock(&g_mfg_lock);
 	ret = pm_callback_power_on_nolock(kbdev);
-#if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
-	/* xaga: SWPM power model not built */
-#endif
 	mtk_notify_gpu_power_change(1);
+#if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
+	MTK_LTR_gpu_pmu_resume();
+#endif
+dev_dbg(kbdev->dev, "%s %pK\n", __func__, (void *)kbdev->dev->pm_domain);
+
 	mutex_unlock(&g_mfg_lock);
 
 	return ret;
@@ -945,10 +216,12 @@ static int pm_callback_power_on(struct kbase_device *kbdev)
 
 static void pm_callback_power_off(struct kbase_device *kbdev)
 {
+
+dev_dbg(kbdev->dev, "%s\n", __func__);
 	mutex_lock(&g_mfg_lock);
 	mtk_notify_gpu_power_change(0);
 #if IS_ENABLED(CONFIG_MTK_GPU_SWPM_SUPPORT)
-	/* xaga: SWPM power model not built */
+	MTK_LTR_gpu_pmu_suspend();
 #endif
 	pm_callback_power_off_nolock(kbdev);
 	mutex_unlock(&g_mfg_lock);
@@ -957,7 +230,14 @@ static void pm_callback_power_off(struct kbase_device *kbdev)
 static void pm_callback_power_suspend(struct kbase_device *kbdev)
 {
 	mutex_lock(&g_mfg_lock);
-	dev_vdbg(kbdev->dev, "GPU PM Callback - Suspend");
+
+    if (mtk_common_pm_is_mfg_active()) {
+        pm_callback_power_off_nolock(kbdev);
+        KBASE_PLATFORM_LOGI("%s, force powering off GPU", __func__);
+    }
+    g_is_suspend = 1;
+    KBASE_PLATFORM_LOGI("%s, GPU suspend", __func__);
+
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_E);
 	mutex_unlock(&g_mfg_lock);
 }
@@ -965,17 +245,115 @@ static void pm_callback_power_suspend(struct kbase_device *kbdev)
 static void pm_callback_power_resume(struct kbase_device *kbdev)
 {
 	mutex_lock(&g_mfg_lock);
-	dev_vdbg(kbdev->dev, "GPU PM Callback - Resume");
+
+	g_is_suspend = 0;
+	KBASE_PLATFORM_LOGI("%s, GPU resume", __func__);
+
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_F);
 	mutex_unlock(&g_mfg_lock);
 }
+static void pm_callback_runtime_gpu_active(struct kbase_device *kbdev)
+{
+    unsigned long flags;
+    int error;
+#if IS_ENABLED(CONFIG_MALI_MTK_AUTOSUSPEND_DELAY)
+    int target_fps = 0;
+    int temp_autosuspend_delay_ms = 0;
+#endif
 
-struct kbase_pm_callback_conf pm_callbacks = {
-	.power_on_callback = pm_callback_power_on,
-	.power_off_callback = pm_callback_power_off,
-	.power_suspend_callback  = pm_callback_power_suspend,
-	.power_resume_callback = pm_callback_power_resume,
-};
+    dev_dbg(kbdev->dev, "%s\n", __func__);
+
+    lockdep_assert_held(&kbdev->pm.lock);
+
+    mtk_common_ged_dvfs_write_sysram_last_commit_top_idx();
+    mtk_common_ged_dvfs_write_sysram_last_commit_dual();
+
+    spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
+    WARN_ON(!atomic_read(&kbdev->pm.active_count));
+    WARN_ON(kbdev->pm.runtime_active);
+    spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+
+    if (pm_runtime_status_suspended(kbdev->dev)) {
+        error = pm_runtime_get_sync(kbdev->dev);
+        KBASE_PLATFORM_LOGD("pm_runtime_get_sync returned %d", error);
+    } else {
+		/* Call the async version here, otherwise there could be
+		 * a deadlock if the runtime suspend operation is ongoing.
+		 * Caller would have taken the kbdev->pm.lock and/or the
+		 * scheduler lock, and the runtime suspend callback function
+		 * will also try to acquire the same lock(s).
+		 */
+        error = pm_runtime_get(kbdev->dev);
+        KBASE_PLATFORM_LOGD("pm_runtime_get returned %d", error);
+    }
+    kbdev->pm.runtime_active = true;
+#if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && IS_ENABLED(CONFIG_MALI_MTK_DVFS_POLICY)
+    ged_dvfs_gpu_clock_switch_notify(GED_POWER_ON);
+#endif
+
+#if IS_ENABLED(CONFIG_MALI_MTK_AUTOSUSPEND_DELAY)
+if (ged_gpu_apo_support() == APO_NORMAL_SUPPORT) {
+    target_fps = ged_kpi_get_target_fps();
+
+    if (target_fps < 0 || target_fps > 120)
+        target_fps = ged_kpi_get_panel_refresh_rate();
+
+    if (target_fps > 0 && target_fps <= 120) {
+        if (target_fps >= 90)
+            temp_autosuspend_delay_ms = KBASE_PLATFORM_MAX_SUSPEND_DELAY;
+        else
+            temp_autosuspend_delay_ms = KBASE_PLATFORM_MIN_SUSPEND_DELAY;
+    } else
+        temp_autosuspend_delay_ms = gInit_autosuspend_delay_ms;
+
+    if (gAutosuspend_delay_ms != temp_autosuspend_delay_ms) {
+        ged_gpu_autosuspend_timeout_notify(temp_autosuspend_delay_ms);
+        pm_runtime_set_autosuspend_delay(kbdev->dev, temp_autosuspend_delay_ms);
+        gAutosuspend_delay_ms = temp_autosuspend_delay_ms;
+    }
+}
+#endif
+}
+
+static void pm_callback_runtime_gpu_idle(struct kbase_device *kbdev)
+{
+    unsigned long flags;
+#if IS_ENABLED(CONFIG_MALI_MTK_ADAPTIVE_POWER_POLICY)
+    int temp_autosuspend_delay_ms = 0;
+#endif
+
+    dev_dbg(kbdev->dev, "%s", __func__);
+
+    lockdep_assert_held(&kbdev->pm.lock);
+
+    mtk_common_ged_dvfs_write_sysram_last_commit_top_idx();
+    mtk_common_ged_dvfs_write_sysram_last_commit_dual();
+
+#if IS_ENABLED(CONFIG_MALI_MTK_ADAPTIVE_POWER_POLICY)
+if (ged_gpu_apo_support() == APO_2_0_NORMAL_SUPPORT) {
+    temp_autosuspend_delay_ms = kbdev->dev->power.autosuspend_delay;
+    if (gAutosuspend_delay_ms != temp_autosuspend_delay_ms) {
+        gAutosuspend_delay_ms = temp_autosuspend_delay_ms;
+        ged_gpu_autosuspend_timeout_notify(temp_autosuspend_delay_ms);
+        pm_runtime_set_autosuspend_delay(kbdev->dev, gAutosuspend_delay_ms);
+    }
+}
+#endif /* CONFIG_MALI_MTK_ADAPTIVE_POWER_POLICY */
+
+#if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && IS_ENABLED(CONFIG_MALI_MTK_DVFS_POLICY)
+    ged_dvfs_gpu_clock_switch_notify(GED_SLEEP);
+#endif
+
+    spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
+    WARN_ON(kbdev->pm.backend.l2_state != KBASE_L2_OFF);
+    WARN_ON(atomic_read(&kbdev->pm.active_count));
+    WARN_ON(!kbdev->pm.runtime_active);
+    spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+
+    pm_runtime_mark_last_busy(kbdev->dev);
+    pm_runtime_put_autosuspend(kbdev->dev);
+    kbdev->pm.runtime_active = false;
+}
 
 #ifndef CONFIG_OF
 static struct kbase_io_resources io_resources = {
@@ -1000,28 +378,128 @@ struct kbase_platform_config *kbase_get_platform_config(void)
 	return &versatile_platform_config;
 }
 
-int mtk_platform_device_init(struct kbase_device *kbdev)
+static int kbase_device_runtime_init(struct kbase_device *kbdev)
 {
+#if IS_ENABLED(CONFIG_MALI_MTK_AUTOSUSPEND_DELAY)
+    struct device_node *np = kbdev->dev->of_node;
+#endif
+    int ret = 0;
 
-	if (!kbdev) {
-		pr_err("@%s: kbdev is NULL\n", __func__);
-		return -1;
-	}
+    dev_dbg(kbdev->dev, "%s\n", __func__);
 
-	gpu_dvfs_status_reset_footprint();
-	dev_info(kbdev->dev, "GPU PM Callback - Initialize Done");
+#if IS_ENABLED(CONFIG_MALI_MTK_AUTOSUSPEND_DELAY)
+    if (!of_property_read_u32(np, "autosuspend-delay-ms", &gInit_autosuspend_delay_ms))
+        dev_info(kbdev->dev, "AutoSuspend Delay: %dms", gInit_autosuspend_delay_ms);
+    else {
+        dev_info(kbdev->dev, "AutoSuspend Delay: No dts property setting, default %dms",
+            gInit_autosuspend_delay_ms);
+    }
 
-	return 0;
+    pm_runtime_set_autosuspend_delay(kbdev->dev, gInit_autosuspend_delay_ms);
+    gAutosuspend_delay_ms = gInit_autosuspend_delay_ms;
+#else
+    pm_runtime_set_autosuspend_delay(kbdev->dev, KBASE_PLATFORM_SUSPEND_DELAY);
+#endif
+
+    pm_runtime_use_autosuspend(kbdev->dev);
+
+    pm_runtime_set_active(kbdev->dev);
+    pm_runtime_enable(kbdev->dev);
+
+    if (!pm_runtime_enabled(kbdev->dev)) {
+        KBASE_PLATFORM_LOGE("pm_runtime not enabled");
+        ret = -EINVAL;
+    } else if (atomic_read(&kbdev->dev->power.usage_count)) {
+        KBASE_PLATFORM_LOGE("%s: Device runtime usage count unexpectedly non zero %d",
+            __func__, atomic_read(&kbdev->dev->power.usage_count));
+        ret = -EINVAL;
+    }
+
+    return ret;
 }
 
-void mtk_platform_device_term(struct kbase_device *kbdev) { }
+static void kbase_device_runtime_disable(struct kbase_device *kbdev)
+{
+    dev_dbg(kbdev->dev, "%s\n", __func__);
 
-/* r54 platform common expects these two hooks */
+    if (atomic_read(&kbdev->dev->power.usage_count))
+        KBASE_PLATFORM_LOGE("%s: Device runtime usage count unexpectedly non zero %d",
+            __func__, atomic_read(&kbdev->dev->power.usage_count));
+
+    pm_runtime_disable(kbdev->dev);
+}
+
+static int pm_callback_runtime_on(struct kbase_device *kbdev)
+{
+    dev_dbg(kbdev->dev, "%s\n", __func__);
+    return 0;
+}
+
+static void pm_callback_runtime_off(struct kbase_device *kbdev)
+{
+    dev_dbg(kbdev->dev, "%s\n", __func__);
+}
+
+static void pm_callback_resume(struct kbase_device *kbdev)
+{
+    KBASE_PLATFORM_LOGI("%s", __func__);
+    mutex_lock(&g_mfg_lock);
+    gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_F);
+    mutex_unlock(&g_mfg_lock);
+}
+
+static void pm_callback_suspend(struct kbase_device *kbdev)
+{
+    KBASE_PLATFORM_LOGI("%s", __func__);
+    mutex_lock(&g_mfg_lock);
+    gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_E);
+    mutex_unlock(&g_mfg_lock);
+}
+
+struct kbase_pm_callback_conf pm_callbacks = {
+    .power_on_callback = pm_callback_power_on,
+    .power_off_callback = pm_callback_power_off,
+    .power_suspend_callback = pm_callback_suspend,
+    .power_resume_callback = pm_callback_resume,
+    .power_runtime_init_callback = NULL,
+    .power_runtime_term_callback = NULL,
+    .power_runtime_on_callback = NULL,
+    .power_runtime_off_callback = NULL,
+    .power_runtime_gpu_idle_callback = NULL,
+    .power_runtime_gpu_active_callback = NULL,
+};
+
 int mtk_platform_pm_init(struct kbase_device *kbdev)
 {
-	return 0;
+    struct device_node *np = kbdev->dev->of_node;
+    u32 sleep_mode_enable = 0;
+
+    if (IS_ERR_OR_NULL(kbdev))
+        return -1;
+
+    if (!of_property_read_u32(np, "sleep-mode-enable", &sleep_mode_enable)) {
+        dev_info(kbdev->dev, "Sleep mode %s", (sleep_mode_enable)? "enabled": "disabled");
+
+        if (sleep_mode_enable == 1) {
+            pm_callbacks.power_runtime_init_callback = kbase_device_runtime_init;
+            pm_callbacks.power_runtime_term_callback = kbase_device_runtime_disable;
+            pm_callbacks.power_runtime_on_callback = pm_callback_runtime_on;
+            pm_callbacks.power_runtime_off_callback = pm_callback_runtime_off;
+            pm_callbacks.power_runtime_gpu_idle_callback = pm_callback_runtime_gpu_idle;
+            pm_callbacks.power_runtime_gpu_active_callback = pm_callback_runtime_gpu_active;
+        }
+    } else
+        dev_info(kbdev->dev, "Sleep mode: No dts property setting, default disabled");
+
+    gpu_dvfs_status_reset_footprint();
+
+    dev_info(kbdev->dev, "GPU PM Callback - Initialize Done");
+
+    return 0;
 }
 
 void mtk_platform_pm_term(struct kbase_device *kbdev)
 {
+    if (IS_ERR_OR_NULL(kbdev))
+        return;
 }
