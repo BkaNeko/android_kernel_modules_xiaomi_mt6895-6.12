@@ -2185,16 +2185,21 @@ static int mtk_dsi_set_data_rate(struct mtk_dsi *dsi)
 		data_rate = data_rate * bdg_rxtx_ratio / 100;
 	mipi_tx_rate = data_rate * 1000000;
 
-	/* xaga: an early init may have run before the panel ext supplied the
-	 * real data rate. When the rate finally arrives, drop the cached
-	 * refcount so the next enable re-runs the full DSI init.
+	/* xaga: this used to zero dsi->clk_refcnt "so the next enable re-runs
+	 * the full init".  It runs from inside mtk_dsi_poweron(), right after
+	 * the refcount was incremented, so it left powered hardware with a
+	 * reference count of zero:
+	 *     data rate 1100 arrived, resetting DSI refcount
+	 *     DSI state after poweron stage=0 refcnt=0
+	 * Every later power-off then skipped the real power-down and the ESD
+	 * recovery path fought an imbalanced reference, ending in
+	 *     esd_cmdq_timeout_cb cmdq timeout out   (waiting on DSI0_FRAME_DONE)
+	 * XAGA_DSI_STAGE_NORMAL() already forces the full init path on every
+	 * enable, so the reset is not needed - only report the rate.
 	 */
-	if (xaga_force_dsi_reinit && !dsi->data_rate && data_rate) {
-		dev_info(dsi->dev,
-			 "xaga: data rate %u arrived, resetting DSI refcount\n",
-			 data_rate);
-		dsi->clk_refcnt = 0;
-	}
+	if (xaga_force_dsi_reinit && !dsi->data_rate && data_rate)
+		dev_info(dsi->dev, "xaga: data rate %u arrived (refcnt stays %d)\n",
+			 data_rate, dsi->clk_refcnt);
 
 	/* Store DSI data rate in MHz */
 	dsi->data_rate = data_rate;

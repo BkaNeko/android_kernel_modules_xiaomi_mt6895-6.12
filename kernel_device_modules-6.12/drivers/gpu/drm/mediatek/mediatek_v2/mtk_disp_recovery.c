@@ -280,7 +280,22 @@ static void esd_check_done_cb(struct cmdq_cb_data data)
 					NULL);
 	CRTC_MMP_MARK(index, esd_check, 2, 8);
 #ifdef CONFIG_MI_DISP_ESD_CHECK
-	ret = mtk_ddp_comp_io_cmd(output_comp, NULL, MI_DISP_ESD_CHECK_CMP, NULL);
+	/* xaga: in video mode the response is fetched by mtk_dsi_read_gce(),
+	 * which stores it in the DISP_SLOT_READ_DDIC_BASE GCE slots.  The MI
+	 * comparator (mi_mtk_dsi_esd_cmp) only inspects
+	 * esd_ctx->esd_read_result, which the *MI* reader fills, so it compared
+	 * zeros against the expected value and reported a failure on every
+	 * single check:
+	 *     [DSI]cmp fail: register:0xa read(0x0)!=expect(0x9c)
+	 *     [ESD0]esd check fail, will do esd recovery
+	 * That bogus recovery then reset the panel five times and gave up.
+	 * Keep video mode on the GCE slots like mainline does.
+	 */
+	if (mtk_dsi_is_cmd_mode(output_comp))
+		ret = mtk_ddp_comp_io_cmd(output_comp, NULL, MI_DISP_ESD_CHECK_CMP, NULL);
+	else
+		ret = mtk_ddp_comp_io_cmd(output_comp, NULL, ESD_CHECK_CMP,
+					 (void *)mtk_crtc);
 #else
 	ret = mtk_ddp_comp_io_cmd(output_comp, NULL, ESD_CHECK_CMP,
 					 (void *)mtk_crtc);
