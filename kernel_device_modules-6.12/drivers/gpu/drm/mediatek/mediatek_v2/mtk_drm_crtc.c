@@ -17171,7 +17171,33 @@ void mtk_crtc_first_enable_ddp_config(struct mtk_drm_crtc *mtk_crtc)
 			__get_golden_setting_context(mtk_crtc);
 
 #ifndef DRM_CMDQ_DISABLE
-	if (priv->data->mmsys_id == MMSYS_MT6985 ||
+	if (priv->data->mmsys_id == MMSYS_MT6895) {
+		/* xaga: MT6895 MUST enable the MMSYS->GCE event output here.
+		 * The 5.10 driver groups MT6895 with MT6983/6765/6768/6879/6855:
+		 *     writel(0x3, config_regs + DISP_REG_CONFIG_MMSYS_GCE_EVENT_SEL);
+		 *     writel(0x1, config_regs + DISP_REG_CONFIG_BYPASS_MUX_SHADOW);
+		 * but this 6.12 port rewrote that block for MT6985/6989/6991/6993
+		 * and dropped MT6895 entirely.  Without EVENT_GCED_EN|EVENT_GCEM_EN
+		 * the MMSYS never forwards DSI0 frame-done to cmdsys, so the first
+		 * commit blocks forever on
+		 *     [Sync] wait for event 313 (CMDQ_EVENT_MMSYS_DSI0_FRAME_DONE)
+		 * even though the DSI engine is fine - measured on this board:
+		 *     DSI START=1 INTEN=0x5010, irq=551 frame_done=549 underrun=0
+		 * The resulting cmdq timeout then holds the display MUTEX and every
+		 * later commit fails with "could not acquire mutex 0".
+		 */
+		writel(0x3, mtk_crtc->config_regs +
+				DISP_REG_CONFIG_MMSYS_GCE_EVENT_SEL);
+		writel(0x1, mtk_crtc->config_regs +
+				DISP_REG_CONFIG_DISPSYS_BYPASS_MUX_SHADOW);
+
+		if (mtk_crtc->side_config_regs) {
+			writel(0x3, mtk_crtc->side_config_regs +
+					DISP_REG_CONFIG_MMSYS_GCE_EVENT_SEL);
+			writel(0x1, mtk_crtc->side_config_regs +
+					DISP_REG_CONFIG_DISPSYS_BYPASS_MUX_SHADOW);
+		}
+	} else if (priv->data->mmsys_id == MMSYS_MT6985 ||
 		priv->data->mmsys_id == MMSYS_MT6989) {
 		/*Set EVENT_GCED_EN EVENT_GCEM_EN*/
 		writel(0x3, mtk_crtc->config_regs +
