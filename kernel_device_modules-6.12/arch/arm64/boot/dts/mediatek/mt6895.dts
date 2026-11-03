@@ -3436,8 +3436,18 @@
 			gpueb_mem_addr = <0x0 0x7c600000>;
 			gpueb_mem_size = <0x0 0x200000>;
 
+			/* xaga: MEM_ID_GPUFREQ must hold struct
+			 * gpufreq_shared_status, which this tree's 6.12 gpufreq
+			 * makes 10456 bytes (identical to OPPO's 6.12 tree).
+			 * The 5.10-era 0x1000 is far too small - the boot log
+			 * says so itself:
+			 *   shared status memory: size: 4096, used: 10456
+			 * and g_shared_mem_size is forwarded to the EB as
+			 * send_msg.u.shared_mem.size, so the EB was told 4096
+			 * as well.  OPPO's 6.12 mt6895.dts uses 0x4000.
+			 */
 			gpueb_mem_table =
-				<0 0x1000>,   /* 4KB */
+				<0 0x4000>,   /* 16KB - fits 10456 */
 				<1 0x180000>; /* 1.5MB */
 
 			gpueb_mem_name_table =
@@ -3445,7 +3455,7 @@
 				"MEM_ID_LOG";     /* LOGGER */
 
 			gpueb-mem-table =
-				<0 0x1000>,   /* 4KB */
+				<0 0x4000>,   /* 16KB - fits 10456 */
 				<1 0x180000>; /* 1.5MB */
 
 			gpueb-mem-name-table =
