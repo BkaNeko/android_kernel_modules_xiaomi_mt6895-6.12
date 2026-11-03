@@ -50,6 +50,19 @@
  *
  * Return: 0 on success, error code otherwise.
  */
+/* xaga: the stall dump below runs with hwaccess_lock held and local IRQs
+ * disabled, and costs ~21 MMIO reads (5x32-bit + 8x64-bit), so it perturbs the
+ * very timing it observes.  Keep it for diagnosis but bound it: a few full
+ * dumps per boot, then one line saying it stopped.  xaga_stall_dump=0 disables
+ * it entirely (also settable at runtime via sysfs).
+ */
+static bool xaga_stall_dump = true;
+module_param(xaga_stall_dump, bool, 0644);
+MODULE_PARM_DESC(xaga_stall_dump,
+		 "Dump GPU/power registers when the cache clean stalls (default on)");
+#define XAGA_STALL_DUMP_MAX 3
+static int xaga_stall_dump_count;
+
 static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 {
 	const ktime_t wait_loop_start = ktime_get_raw();
@@ -141,6 +154,8 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 		 * power state sane but RAWSTAT empty) from "GPU not powered or in
 		 * reset" (PWR_STATUS / PWR_IRQ_RAWSTAT odd).
 		 */
+		if (xaga_stall_dump && xaga_stall_dump_count < XAGA_STALL_DUMP_MAX) {
+			xaga_stall_dump_count++;
 		dev_err(kbdev->dev,
 			"xaga: cache-clean stuck RAWSTAT=0x%08x MASK=0x%08x STAT=0x%08x GPU_STATUS=0x%08x in_progress=%d host_pwr_iface=%d\n",
 			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_RAWSTAT)),
@@ -171,6 +186,10 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_STATUS)),
 				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS) + 4),
 				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS)));
+		} else if (xaga_stall_dump && xaga_stall_dump_count == XAGA_STALL_DUMP_MAX) {
+			dev_err(kbdev->dev,
+				"xaga: further cache-clean stall dumps suppressed\n");
+		}
 
 		if (kbase_prepare_to_reset_gpu(kbdev, RESET_FLAGS_NONE)) {
 #if IS_ENABLED(CONFIG_MALI_MTK_MBRAIN_SUPPORT)

@@ -491,6 +491,14 @@ bool skip_clk_prepare;
  * forever for CMDQ FRAME_DONE (313).  Force the full init path by default.
  */
 static bool xaga_force_dsi_reinit = true;
+/* xaga: the panel ext supplies the real data rate only after the first enable
+ * has already run, so the first power-on can program the PHY with rate 0.  The
+ * old workaround zeroed dsi->clk_refcnt for that, which broke the reference
+ * accounting (powered hardware, refcnt 0).  Instead record that a re-init is
+ * due and let power-on run the full init even when the count is already > 1;
+ * the count itself stays balanced.
+ */
+static bool xaga_dsi_reinit_pending;
 module_param(xaga_force_dsi_reinit, bool, 0644);
 MODULE_PARM_DESC(xaga_force_dsi_reinit,
 		 "Run the full DSI power-on/init sequence even outside NORMAL stage");
@@ -2197,9 +2205,12 @@ static int mtk_dsi_set_data_rate(struct mtk_dsi *dsi)
 	 * XAGA_DSI_STAGE_NORMAL() already forces the full init path on every
 	 * enable, so the reset is not needed - only report the rate.
 	 */
-	if (xaga_force_dsi_reinit && !dsi->data_rate && data_rate)
-		dev_info(dsi->dev, "xaga: data rate %u arrived (refcnt stays %d)\n",
+	if (xaga_force_dsi_reinit && !dsi->data_rate && data_rate) {
+		dev_info(dsi->dev,
+			 "xaga: data rate %u arrived (refcnt %d, re-init pending)\n",
 			 data_rate, dsi->clk_refcnt);
+		xaga_dsi_reinit_pending = true;
+	}
 
 	/* Store DSI data rate in MHz */
 	dsi->data_rate = data_rate;
@@ -2333,8 +2344,9 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	DDPDBG("%s+\n", __func__);
 
 	if (XAGA_DSI_STAGE_NORMAL()) {
-		if (++dsi->clk_refcnt != 1)
+		if (++dsi->clk_refcnt != 1 && !xaga_dsi_reinit_pending)
 			return 0;
+		/* else: fall through and run the full init again */
 	}
 
 	if (dsi->encoder.dev)
@@ -2452,6 +2464,8 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 			DSI_BYPASS_SHADOW, DSI_BYPASS_SHADOW);
 
 	DDPDBG("%s-\n", __func__);
+
+	xaga_dsi_reinit_pending = false;
 
 	return 0;
 
