@@ -63,13 +63,8 @@ static struct page *kbase_native_mgm_alloc(struct memory_group_manager_device *m
 	BUILD_BUG_ON((BASEP_CONTEXT_MMU_GROUP_ID_MASK >> BASEP_CONTEXT_MMU_GROUP_ID_SHIFT) <
 		     (BASE_MEM_GROUP_COUNT - 1));
 
-	extern bool mali_force_dma32;
-
 	CSTD_UNUSED(mgm_dev);
 	CSTD_UNUSED(group_id);
-
-	if (mali_force_dma32)
-		gfp_mask |= __GFP_DMA32;
 
 	return alloc_pages(gfp_mask, order);
 }

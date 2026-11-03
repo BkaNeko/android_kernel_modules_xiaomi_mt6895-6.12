@@ -23,7 +23,6 @@
  * DOC: Base kernel MMU management.
  */
 
-
 #include <linux/kernel.h>
 #include <linux/dma-mapping.h>
 #include <linux/migrate.h>
@@ -62,8 +61,6 @@
 #include <ged_mali_event.h>
 #include <platform/mtk_platform_common/mtk_platform_mali_event.h>
 #endif /* CONFIG_MALI_MTK_MBRAIN_SUPPORT */
-
-extern bool xaga_strip_share_active;
 
 /* Threshold used to decide whether to flush full caches or just a physical range */
 #define KBASE_PA_RANGE_THRESHOLD_NR_PAGES 20
@@ -2510,10 +2507,6 @@ static int mmu_insert_pages_no_flush(struct kbase_device *kbdev, struct kbase_mm
 				     unsigned long flags, int const group_id, u64 *dirty_pgds,
 				     struct kbase_va_region *reg, bool ignore_page_migration)
 {
-	/* xaga: user contexts (kctx != NULL) get their share bits stripped,
-	 * the MCU firmware address space keeps them.
-	 */
-	xaga_strip_share_active = (mmut->kctx != NULL);
 	phys_addr_t pgd;
 	u64 *pgd_page;
 	u64 insert_vpfn = start_vpfn;
@@ -2798,7 +2791,6 @@ int kbase_mmu_insert_pages_no_flush(struct kbase_device *kbdev, struct kbase_mmu
 				    struct kbase_va_region *reg)
 {
 	int err;
-	xaga_strip_share_active = (mmut->kctx != NULL);
 
 	/* Early out if there is nothing to do */
 	if (nr == 0)
@@ -3464,7 +3456,6 @@ static int kbase_mmu_update_pages_no_flush(struct kbase_device *kbdev, struct kb
 					   unsigned long flags, int const group_id, u64 *dirty_pgds)
 {
 	phys_addr_t pgd;
-	xaga_strip_share_active = (mmut->kctx != NULL);
 	u64 *pgd_page;
 	int err;
 
