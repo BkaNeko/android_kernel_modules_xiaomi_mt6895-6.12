@@ -676,6 +676,14 @@ static void kbase_devfreq_work_term(struct kbase_device *kbdev)
 
 int kbase_devfreq_init(struct kbase_device *kbdev)
 {
+	/* xaga: identity marker.  Flashing the wrong vendor_boot has already cost
+	 * a debugging round once: the device kept running an older
+	 * mali_kbase_mt6895.ko and the only way to tell was the module build-id
+	 * buried in an oops trace.  Print a fixed, greppable string at init so the
+	 * running module can be identified from the boot log alone.
+	 */
+	pr_info("xaga: mali devfreq init - NULL-kbdev guard ACTIVE (build f1a41fac+)\n");
+
 	struct devfreq_dev_profile *dp;
 	int err;
 	unsigned int i;
