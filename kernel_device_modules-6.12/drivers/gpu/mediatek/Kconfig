@@ -312,3 +312,11 @@ config MTK_GPU_FWLOG_DEBUG
 source "$(KCONFIG_EXT_PREFIX)drivers/gpu/mediatek/mali-valhall/base/arm/Kconfig"
 source "$(KCONFIG_EXT_PREFIX)drivers/gpu/mediatek/mali-valhall/gpu/arm/Kconfig"
 
+# xaga: without this the entire MTK platform layer is undefined for the make
+# path.  MTK_Kconfig defines CONFIG_MALI_MTK_COMMON, the only switch that pulls
+# mtk_common_device_init() into kbase dev_init[] (and with it
+# mtk_platform_pm_init + the DVFS/LTR/logbuffer/counter init).  Only
+# BUILD.bazel referenced it, which is the Kleaf path this build does not use, so
+# every CONFIG_MALI_MTK_* line in xaga.config was silently dropped.
+source "$(KCONFIG_EXT_PREFIX)drivers/gpu/mediatek/mali-valhall/gpu/arm/midgard/MTK_Kconfig"
+

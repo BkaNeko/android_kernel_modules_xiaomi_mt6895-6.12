@@ -2047,8 +2047,28 @@ static int mtk_dsi_LTPO_VM_update(struct mtk_dsi *dsi, struct mtk_ddp_comp *comp
 void mtk_dsi_gce_event_cfg(struct mtk_dsi *dsi, struct mtk_ddp_comp *comp,
 		struct cmdq_pkt *handle)
 {
+	struct mtk_drm_private *gpriv = NULL;
+
 	if (comp == NULL) {
 		DDPPR_ERR("%s mtk_ddp_comp is null\n", __func__);
+		return;
+	}
+
+	/* xaga: this is an MT6993 FIFO-monitor workaround and must not run on
+	 * MT6895.  Two idlemgr call sites (mtk_drm_lowpower.c:1127 and :2456)
+	 * invoke this io_cmd with no SoC check at all, so on this board we were
+	 * writing 0x13190918 into DSI+0x210 and 0x1000 into DSI+0xE4.  The 5.10
+	 * driver for the same phone never touches 0x210/0x214 (zero hits in that
+	 * whole tree), and 0xE4 is MT6993's target_nl2 while MT6895's target-line
+	 * lives at 0x300, so the write lands on an unrelated register.  Only the
+	 * DSI enable path (mtk_dsi.c:6258) had the MT6993 guard; make the guard
+	 * apply to every caller, which restores 5.10 behaviour here.
+	 */
+	if (dsi->ddp_comp.mtk_crtc && dsi->ddp_comp.mtk_crtc->base.dev)
+		gpriv = dsi->ddp_comp.mtk_crtc->base.dev->dev_private;
+
+	if (!gpriv || gpriv->data->mmsys_id != MMSYS_MT6993) {
+		DDPINFO("%s skipped on non-MT6993\n", __func__);
 		return;
 	}
 

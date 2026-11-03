@@ -9636,6 +9636,24 @@ static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 				 "xaga: DSI irq=%lu frame_done=%lu underrun=%lu\n",
 				 xaga_dsi_irq_cnt, xaga_dsi_frame_done_cnt,
 				 xaga_dsi_underrun_cnt);
+			/* The decisive pair.  Event 313 is a MMSYS-side event, so it
+			 * can only be forwarded to cmdsys while 0x308 has
+			 * EVENT_GCED_EN|EVENT_GCEM_EN (0x3) and 0xf00 has
+			 * BYPASS_MUX_SHADOW (0x1).  Those writes exist in both 5.10
+			 * and 6.12, so if the readback here is already 0x3/0x1 the
+			 * missing event is NOT a "forgot to enable" bug and the fault
+			 * lies downstream (DSI side or the mux itself).
+			 */
+			dev_info(crtc->dev->dev,
+				 "xaga: MMSYS GCE_EVENT_SEL=0x%x BYPASS_MUX_SHADOW=0x%x (want 0x3/0x1)\n",
+				 readl(mtk_crtc->config_regs +
+				       DISP_REG_CONFIG_MMSYS_GCE_EVENT_SEL),
+				 readl(mtk_crtc->config_regs +
+				       DISP_REG_CONFIG_DISPSYS_BYPASS_MUX_SHADOW));
+			dev_info(crtc->dev->dev,
+				 "xaga: DSI 0x210=0x%08x 0x214=0x%08x 0x300=0x%08x 0xE4=0x%08x\n",
+				 readl(r + 0x210), readl(r + 0x214),
+				 readl(r + 0x300), readl(r + 0xE4));
 		} else {
 			dev_info(crtc->dev->dev,
 				 "xaga: cmdq timeout without a DSI output comp\n");
@@ -17197,6 +17215,20 @@ void mtk_crtc_first_enable_ddp_config(struct mtk_drm_crtc *mtk_crtc)
 			writel(0x1, mtk_crtc->side_config_regs +
 					DISP_REG_CONFIG_DISPSYS_BYPASS_MUX_SHADOW);
 		}
+
+		/* xaga: prove the write landed.  If this readback is not 0x3 the
+		 * event output is still disabled and every commit will keep timing
+		 * out on event 313, so the value matters more than the call site.
+		 */
+		dev_info(mtk_crtc->base.dev->dev,
+			 "xaga: GCE_EVENT_SEL now=0x%x BYPASS_MUX=0x%x side=0x%x\n",
+			 readl(mtk_crtc->config_regs +
+			       DISP_REG_CONFIG_MMSYS_GCE_EVENT_SEL),
+			 readl(mtk_crtc->config_regs +
+			       DISP_REG_CONFIG_DISPSYS_BYPASS_MUX_SHADOW),
+			 mtk_crtc->side_config_regs ?
+			 readl(mtk_crtc->side_config_regs +
+			       DISP_REG_CONFIG_MMSYS_GCE_EVENT_SEL) : 0xffffffff);
 	} else if (priv->data->mmsys_id == MMSYS_MT6985 ||
 		priv->data->mmsys_id == MMSYS_MT6989) {
 		/*Set EVENT_GCED_EN EVENT_GCEM_EN*/
