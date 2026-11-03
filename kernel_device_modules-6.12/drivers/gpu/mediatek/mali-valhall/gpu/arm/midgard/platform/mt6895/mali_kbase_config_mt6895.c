@@ -82,6 +82,24 @@ module_param(mali_hw_seq_mask, uint, 0644);
  * The 5.10 driver for this chip returns 2 here.  Default to that, but keep it
  * writable so both values can be A/B tested without reflashing.
  */
+/* xaga: run the power path exactly like the 5.10 r54 driver for this chip.
+ *
+ * 5.10 pm_callback_power_on_nolock() does, in order:
+ *     gpufreq_power_control(GPU_PWR_ON)      - SWCG -> MTCMOS -> BUCK on the EB
+ *     mtk_common_pm_mfg_active()
+ *     mtk_common_gpufreq_commit(ged_dvfs_get_last_commit_idx())
+ *     ged_dvfs_gpu_clock_switch_notify(GED_POWER_ON)
+ *     return 2 (GPU_STATE_IN_RESET)
+ * and touches none of the hand-written clock/PDCA/MFG sequences this port added.
+ * Now that GPUEB IPI works the EB performs the power sequence itself, so those
+ * extra steps are at best redundant and at worst fight the EB.  Default off so
+ * the current behaviour is unchanged; enable to A/B against the 5.10 reference.
+ */
+static bool mali_stock_pm;
+module_param(mali_stock_pm, bool, 0644);
+MODULE_PARM_DESC(mali_stock_pm,
+		 "Follow the 5.10 r54 power sequence exactly (skip local clock/PDCA/MFG steps)");
+
 static int xaga_pwr_state = 2;
 module_param(xaga_pwr_state, int, 0644);
 MODULE_PARM_DESC(xaga_pwr_state,
@@ -645,6 +663,17 @@ static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 			dev_err(kbdev->dev, "xaga: gpufreq GPU_PWR_ON failed (%d)\n", pwr_ret);
 	}
 
+	if (mali_stock_pm) {
+		/* 5.10 parity: the EB already sequenced the rails and clocks. */
+		mtk_common_pm_mfg_active();
+		mtk_common_gpufreq_commit(mtk_common_ged_dvfs_get_last_commit_idx());
+		ged_dvfs_gpu_clock_switch_notify(1);
+		dev_info(kbdev->dev,
+			 "xaga: 5.10 parity power-on, reporting GPU state %d\n",
+			 xaga_pwr_state);
+		return xaga_pwr_state;
+	}
+
 	/* Stock Step 2: Check SPM power & bus status */
 	{
 		void __iomem *spm = ioremap(0x1c001000, 0x1000);
@@ -837,11 +866,13 @@ static void pm_callback_power_off_nolock(struct kbase_device *kbdev)
 
 	gpu_dvfs_status_footprint(GPU_DVFS_STATUS_STEP_A);
 
-	/* Symmetric Step: Power off GPU clocks (switch muxes to ref first, then disable PLLs) */
-	mt6895_power_off_clocks(kbdev);
+	if (!mali_stock_pm) {
+		/* Symmetric Step: power off GPU clocks (muxes to ref, then PLLs) */
+		mt6895_power_off_clocks(kbdev);
 
-	/* Preserve PDCv2 active power control on power down */
-	mt6895_pdca_config(kbdev, false);
+		/* Preserve PDCv2 active power control on power down */
+		mt6895_pdca_config(kbdev, false);
+	}
 
 	/* xaga: mirror of the power-on path - hand the GPU back to MTK's
 	 * sequence (clocks -> MTCMOS -> BUCK).  Keeping this symmetric is what
