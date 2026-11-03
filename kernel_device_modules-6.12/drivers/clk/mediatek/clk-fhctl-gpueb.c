@@ -312,7 +312,9 @@ static int gpueb_init_v1(struct pll_dts *array, struct match *match)
 		int ret;
 		void *ipidev;
 
-		channel_id = gpueb_get_send_PIN_ID_by_name("IPI_ID_FHCTL");
+		channel_id = gpueb_get_recv_PIN_ID_by_name("IPI_ID_FHCTL");
+		if (channel_id == -1)
+			channel_id = gpueb_get_send_PIN_ID_by_name("IPI_ID_FHCTL");
 		if (channel_id == -1) {
 			pr_warn("[FHCTL-DIAG] [GPUEB] get gpueb channel ID fail, deferring\n");
 			return -EPROBE_DEFER;

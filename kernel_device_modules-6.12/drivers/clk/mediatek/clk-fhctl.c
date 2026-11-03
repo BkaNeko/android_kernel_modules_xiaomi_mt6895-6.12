@@ -80,6 +80,7 @@ static bool mtk_fh_set_rate(const char *pll_name, unsigned long dds, int postdiv
 
 static struct pll_dts *parse_dt(struct platform_device *pdev)
 {
+	static struct pll_dts *cached_array;
 	struct device_node *root, *map, *of_pll;
 	unsigned int num_pll = 0;
 	int iomap_idx = 0;
@@ -87,6 +88,9 @@ static struct pll_dts *parse_dt(struct platform_device *pdev)
 	int pll_idx = 0;
 	const struct of_device_id *match;
 	int size;
+
+	if (cached_array)
+		return cached_array;
 
 	root = pdev->dev.of_node;
 	match = of_match_node(pdev->dev.driver->of_match_table, root);
@@ -155,6 +159,7 @@ static struct pll_dts *parse_dt(struct platform_device *pdev)
 	}
 
 	set_dts_array(array);
+	cached_array = array;
 
 	return array;
 }
