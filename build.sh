@@ -711,7 +711,7 @@ PYEOF
     cp modules.load modules.load.recovery
     # Set default module options for mali_kbase (also customizable via magiskboot repack)
     cat << 'EOF' > modules.options
-options mali_kbase_mt6895 xaga_prepower=0 mali_strip_share=0 mali_force_coh_none=0 mali_stock_pm=1
+options mali_kbase_mt6895 xaga_prepower=0 mali_strip_share=0 mali_force_coh_none=0 mali_stock_pm=0
 EOF
     cp modules.options modules.options.recovery 2>/dev/null || true
     if [ -f "$VD/vendor_ramdisk/rd/lib/modules/isee.ko" ]; then

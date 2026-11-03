@@ -10190,25 +10190,47 @@
 		 * instead of only surfacing to userspace as SW_FAULT_2 (0x72).
 		 */
 		reset-exception-mask = <0x03ffffff>;
-		/* xaga: NO clocks/clock-names here - stock parity.
-		 * The live DT of the booting 5.10 kernel (which runs the same
-		 * r54p1-11eac0 DDK) lists exactly these properties on
-		 * /proc/device-tree/mali@13000000:
-		 *   #cooling-cells compatible ged-supply interrupt-names
-		 *   interrupts name operating-points-v2 phandle
-		 *   protected-memory-allocator reg
-		 * i.e. no clocks at all: the GPU clocks are owned by
-		 * gpufreq/GPUEB and must not be enabled by kbase.  Declaring
-		 * them made kbase drive the same clock tree as the EB.
+		/* xaga: clocks ARE required by this port.
+		 * Removing them (to mimic the 5.10 live DT, which has none) made
+		 * mt6895_acquire_clocks() get NULL for every clock, so
+		 * mt6895_power_on_clocks() became a no-op and the GPU had no
+		 * clock at all:
+		 *   Register LUT 000a0800 initialized for GPU arch 0x00000000
+		 *   Early device initialization failed error = -22
+		 *   probe with driver mali failed with error -22
+		 * i.e. kbase could not even read GPU_ID.  The 5.10 tree works
+		 * without DT clocks because its EB powers them; this port drives
+		 * the clock tree itself, so the bindings must stay.
 		 */
-		/* xaga: no _vcore/_vsram/_vstack supplies - stock parity.
-		 * The live DT of the working 5.10 kernel declares none, because
-		 * these BUCK rails belong to gpufreq/GPUEB.  With the supplies
-		 * present our platform callback called regulator_enable(vcore)
-		 * and regulator_set_voltage(vsram, 750000, 800000) on rails the
-		 * EB was already driving - exactly the kind of double-drive that
-		 * shows up as "unstable GPU clk/pwr".
+		clocks =
+			<&topckgen_clk CLK_TOP_MFG_SEL_0_SEL>,
+			<&topckgen_clk CLK_TOP_MFG_SEL_1_SEL>,
+			<&mfg_top_config_clk CLK_MFGCFG_BG3D>,
+			<&mfgpll_pll_ctrl_clk CLK_MFG_AO_MFGPLL>,
+			<&mfgscpll_pll_ctrl_clk CLK_MFGSC_AO_MFGSCPLL>,
+			<&topckgen_clk CLK_TOP_MFGPLL>,
+			<&topckgen_clk CLK_TOP_MFGSCPLL>,
+			<&topckgen_clk CLK_TOP_MFG_REF>,
+			<&topckgen_clk CLK_TOP_MFGSC_REF>;
+		clock-names =
+			"mfg_sel_0",
+			"mfg_sel_1",
+			"mfgcfg_bg3d",
+			"mfg_ao_mfgpll",
+			"mfgsc_ao_mfgscpll",
+			"mfgpll_ck",
+			"mfgscpll_ck",
+			"mfg_ref_ck",
+			"mfgsc_ref_ck";
+		/* xaga: regulator supplies kept - this port's power path uses
+		 * them (devm_regulator_get_optional + regulator_enable(vcore) +
+		 * regulator_set_voltage(vsram)).  Removing them made those calls
+		 * no-ops, which combined with the missing clocks left the GPU
+		 * completely unclocked (GPU_ID read back as 0, probe -EINVAL).
 		 */
+		_vstack-supply = <&mt6368_vbuck2>;
+		_vcore-supply = <&mt6363_vbuck2>;
+		_vsram-supply = <&mt6363_vbuck4>;
 		/* xaga: no system-coherency property - stock parity.
 		 * Xiaomi's 5.10 mt6895.dts and OPPO's 6.12 mt6895.dts both omit
 		 * it, so the driver default COHERENCY_NONE (31) applies.  The
