@@ -123,9 +123,29 @@ static inline int _can_switch_check_mode(struct drm_crtc *crtc,
 	return ret;
 }
 
+/* xaga: the first ESD packet wedges cmdq thread 6 before anything else can
+ * run.  It carries "stop vdo mode -> esd read -> wait for event 313
+ * (DSI0_FRAME_DONE)", and because video mode has just been stopped the frame
+ * done never arrives, so the packet times out and every later commit queues
+ * behind it:
+ *     5.49 mtk_output_dsi_enable / stop_vdo_mode / esd_read
+ *     5.70 [CMDQ]<0>(6) SW timeout, curr inst wait for event 313
+ *     ... 64 timeouts up to 25.2s, ovl_nr_path=0 at timeout
+ * Video mode is then never restarted, so nothing reaches the panel and the
+ * screen stays black with the backlight on.  Keep a switch to skip ESD
+ * checking entirely while bringing the panel up.
+ */
+static bool xaga_esd_check_disable = true;
+module_param(xaga_esd_check_disable, bool, 0644);
+MODULE_PARM_DESC(xaga_esd_check_disable,
+		 "Skip DSI ESD checking (bring-up: the ESD packet stalls cmdq)");
+
 static inline int _lcm_need_esd_check(struct mtk_panel_ext *panel_ext)
 {
 	int ret = 0;
+
+	if (xaga_esd_check_disable)
+		return 0;
 
 	if (panel_ext->params->esd_check_enable == 1)
 		ret = 1;
