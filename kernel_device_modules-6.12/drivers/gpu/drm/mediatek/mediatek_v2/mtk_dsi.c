@@ -75,7 +75,13 @@
 #include "mtk_dsi.h"
 //#include "mtk_reg_disp_bdg.h"
 /* ************end bridge ic ************* */
-#define DSI_SELF_PATTERN
+/* xaga: the 5.10 driver for this board has this commented out
+ * (`//#define DSI_SELF_PATTERN`); enabling it makes the DSI engine emit its
+ * internal test pattern instead of the OVL pixels while the panel is being
+ * brought up, which hides whether real frames ever reach the panel.  Keep it
+ * off to match the known-good reference.
+ */
+/* #define DSI_SELF_PATTERN */
 
 int dbg_always_ultra;
 module_param(dbg_always_ultra, int, 0644);
