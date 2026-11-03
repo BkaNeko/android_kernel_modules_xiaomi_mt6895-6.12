@@ -1,2 +1,11 @@
 # local build outputs (build.sh)
 out/
+
+# xaga: build backups
+*.bak
+*.mtk_bak
+*.o
+*.ko
+*.mod
+*.cmd
+*.mod.c
