@@ -148,6 +148,21 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_STATUS)),
 			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_STATUS)),
 			kbdev->cache_clean_in_progress, kbdev->pm.backend.has_host_pwr_iface);
+		/* Power domain READY/PWRTRANS tell "command rejected" apart from
+		 * "the domain the flush needs is not powered at all".  host_pwr_iface
+		 * is 0 on MT6895, so the PWR_STATUS dump above never runs.
+		 */
+		dev_err(kbdev->dev,
+			"xaga: domains READY shader=%llx tiler=%llx l2=%llx stack=%llx | PWRTRANS shader=%llx tiler=%llx l2=%llx stack=%llx\n",
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(SHADER_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(TILER_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(L2_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(STACK_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(SHADER_PWRTRANS)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(TILER_PWRTRANS)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(L2_PWRTRANS)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(STACK_PWRTRANS)));
+
 		if (kbdev->pm.backend.has_host_pwr_iface)
 			dev_err(kbdev->dev,
 				"xaga: power PWR_IRQ_RAWSTAT=0x%08x PWR_IRQ_MASK=0x%08x PWR_IRQ_STATUS=0x%08x PWR_STATUS=0x%08x%08x\n",
