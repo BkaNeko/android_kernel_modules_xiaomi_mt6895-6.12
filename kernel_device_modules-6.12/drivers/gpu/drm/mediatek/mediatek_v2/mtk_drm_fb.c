@@ -163,11 +163,22 @@ mtk_drm_framebuffer_init(struct drm_device *dev,
 {
 	struct mtk_drm_fb *mtk_fb;
 	struct drm_mode_fb_cmd2 linear_mode;
+	u64 legacy_blend = 0;
 	int ret;
 
+	/* xaga: two halves, and the second one was missing.  The MIUI HWC hands
+	 * us a private RGB blend hint 0x0a0000000000000X.  Core KMS cannot
+	 * validate it, so it has to be replaced with a linear modifier for the
+	 * fb we register -- but the original value still has to reach OVL, which
+	 * reads it back through mtk_fb_get_modifier() to decide
+	 * MTK_FMT_PREMULTIPLIED vs opaque blending.  Detecting the hint, forcing
+	 * linear and then dropping the value makes mtk_fb_get_modifier() return
+	 * fb->modifier (linear), so premultiplied layers composite as opaque.
+	 */
 	if (xaga_fb_has_legacy_blend_hint(mode)) {
 		dev_info_once(dev->dev,
 			      "xaga: legacy RGB blend hint kept private, KMS layout linear\n");
+		legacy_blend = mode->modifier[0];
 		linear_mode = *mode;
 		linear_mode.modifier[0] = DRM_FORMAT_MOD_LINEAR;
 		mode = &linear_mode;
@@ -180,6 +191,7 @@ mtk_drm_framebuffer_init(struct drm_device *dev,
 	drm_helper_mode_fill_fb_struct(dev, &mtk_fb->base, mode);
 
 	mtk_fb->gem_obj = obj;
+	mtk_fb->legacy_blend_modifier = legacy_blend;
 
 	ret = drm_framebuffer_init(dev, &mtk_fb->base, &mtk_drm_fb_funcs);
 	if (ret) {

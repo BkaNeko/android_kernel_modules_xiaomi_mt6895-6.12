@@ -13546,14 +13546,23 @@ skip_prete:
 					MTK_DRM_OPT_MSYNC2_0) && params &&
 					params->msync2_enable) {
 				DDPDBG("[Msync]%s, add set vfp period token\n", __func__);
-				GCE_DO(wfe, EVENT_CMD_EOF);
+				/* xaga: same reasoning as the first-config WFE above --
+				 * a wait on EVENT_CMD_EOF (313) blocks the GCE forever
+				 * when the DSI stream is not producing frame-done.  This
+				 * one was missed when xaga_skip_first_wfe was added, and
+				 * it is the instruction the cmdq timeout reports:
+				 *   [Sync] wait for event 313 become 1 value:0
+				 */
+				if (!xaga_skip_first_wfe)
+					GCE_DO(wfe, EVENT_CMD_EOF);
 				/*clear last SOF*/
 				GCE_DO(clear_event, EVENT_DSI_SOF);
 
 				/*for dynamic Msync on/off,set vfp period token*/
 				GCE_DO(set_event, EVENT_SYNC_TOKEN_VFP_PERIOD);
 			} else {
-				GCE_DO(wait_no_clear, EVENT_CMD_EOF);
+				if (!xaga_skip_first_wfe)
+					GCE_DO(wait_no_clear, EVENT_CMD_EOF);
 				GCE_DO(wfe, EVENT_VDO_CABC_EOF);
 				GCE_DO(clear_event, EVENT_CMD_EOF);
 				GCE_DO(set_event, EVENT_VDO_CABC_EOF);
