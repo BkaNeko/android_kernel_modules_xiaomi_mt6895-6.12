@@ -498,7 +498,8 @@ static bool xaga_force_dsi_reinit = true;
  * due and let power-on run the full init even when the count is already > 1;
  * the count itself stays balanced.
  */
-static bool xaga_dsi_reinit_pending;
+static u32 xaga_dsi_last_init_rate;
+static u32 xaga_dsi_init_count;
 module_param(xaga_force_dsi_reinit, bool, 0644);
 MODULE_PARM_DESC(xaga_force_dsi_reinit,
 		 "Run the full DSI power-on/init sequence even outside NORMAL stage");
@@ -2205,12 +2206,10 @@ static int mtk_dsi_set_data_rate(struct mtk_dsi *dsi)
 	 * XAGA_DSI_STAGE_NORMAL() already forces the full init path on every
 	 * enable, so the reset is not needed - only report the rate.
 	 */
-	if (xaga_force_dsi_reinit && !dsi->data_rate && data_rate) {
+	if (xaga_force_dsi_reinit && !dsi->data_rate && data_rate)
 		dev_info(dsi->dev,
-			 "xaga: data rate %u arrived (refcnt %d, re-init pending)\n",
-			 data_rate, dsi->clk_refcnt);
-		xaga_dsi_reinit_pending = true;
-	}
+			 "xaga: data rate %u arrived (refcnt %d, last init rate %u)\n",
+			 data_rate, dsi->clk_refcnt, xaga_dsi_last_init_rate);
 
 	/* Store DSI data rate in MHz */
 	dsi->data_rate = data_rate;
@@ -2344,9 +2343,20 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	DDPDBG("%s+\n", __func__);
 
 	if (XAGA_DSI_STAGE_NORMAL()) {
-		if (++dsi->clk_refcnt != 1 && !xaga_dsi_reinit_pending)
+		/* xaga: re-init is needed when we are the first reference, or when
+		 * the panel ext supplied a different data rate than the one the last
+		 * init ran with (the first enable can run with rate 0).  The check is
+		 * done here, at entry, with up-to-date state - a flag set later from
+		 * set_data_rate() would only take effect on the *next* power-on,
+		 * which may never come.
+		 */
+		if (++dsi->clk_refcnt != 1 &&
+		    dsi->data_rate == xaga_dsi_last_init_rate)
 			return 0;
-		/* else: fall through and run the full init again */
+		if (dsi->clk_refcnt != 1 && dsi->data_rate != xaga_dsi_last_init_rate)
+			dev_info(dsi->dev,
+				 "xaga: re-init, data rate %u != last init rate %u (refcnt %d)\n",
+				 dsi->data_rate, xaga_dsi_last_init_rate, dsi->clk_refcnt);
 	}
 
 	if (dsi->encoder.dev)
@@ -2465,7 +2475,8 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 
 	DDPDBG("%s-\n", __func__);
 
-	xaga_dsi_reinit_pending = false;
+	xaga_dsi_last_init_rate = dsi->data_rate;
+	xaga_dsi_init_count++;
 
 	return 0;
 

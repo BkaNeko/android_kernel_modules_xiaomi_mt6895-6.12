@@ -61,7 +61,11 @@ module_param(xaga_stall_dump, bool, 0644);
 MODULE_PARM_DESC(xaga_stall_dump,
 		 "Dump GPU/power registers when the cache clean stalls (default on)");
 #define XAGA_STALL_DUMP_MAX 3
-static int xaga_stall_dump_count;
+/* xaga: counted per stall cause so a later stall of a different type is not
+ * hidden behind an earlier exhausting the budget.  0 = CLEAN_CACHES_COMPLETED,
+ * 1 = everything else (FLUSH_PA_RANGE_COMPLETED ...).
+ */
+static int xaga_stall_dump_count[2];
 
 static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 {
@@ -114,6 +118,13 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 
 	if (!completed) {
 		char *irq_flag_name;
+		int stall_idx;
+
+		/* xaga: this runs with hwaccess_lock held and local IRQs off;
+		 * kbase_reg_read32/64 themselves take no lock (plain MMIO), so the
+		 * dump cannot self-deadlock - assert the contract instead.
+		 */
+		lockdep_assert_held(&kbdev->hwaccess_lock);
 
 		switch (irq_bit) {
 		case CLEAN_CACHES_COMPLETED:
@@ -154,8 +165,9 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 		 * power state sane but RAWSTAT empty) from "GPU not powered or in
 		 * reset" (PWR_STATUS / PWR_IRQ_RAWSTAT odd).
 		 */
-		if (xaga_stall_dump && xaga_stall_dump_count < XAGA_STALL_DUMP_MAX) {
-			xaga_stall_dump_count++;
+		stall_idx = (irq_bit == CLEAN_CACHES_COMPLETED) ? 0 : 1;
+		if (xaga_stall_dump && xaga_stall_dump_count[stall_idx] < XAGA_STALL_DUMP_MAX) {
+			xaga_stall_dump_count[stall_idx]++;
 		dev_err(kbdev->dev,
 			"xaga: cache-clean stuck RAWSTAT=0x%08x MASK=0x%08x STAT=0x%08x GPU_STATUS=0x%08x in_progress=%d host_pwr_iface=%d\n",
 			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_RAWSTAT)),
@@ -186,7 +198,9 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_STATUS)),
 				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS) + 4),
 				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS)));
-		} else if (xaga_stall_dump && xaga_stall_dump_count == XAGA_STALL_DUMP_MAX) {
+		} else if (xaga_stall_dump &&
+			   xaga_stall_dump_count[stall_idx] == XAGA_STALL_DUMP_MAX) {
+			xaga_stall_dump_count[stall_idx]++;
 			dev_err(kbdev->dev,
 				"xaga: further cache-clean stall dumps suppressed\n");
 		}
