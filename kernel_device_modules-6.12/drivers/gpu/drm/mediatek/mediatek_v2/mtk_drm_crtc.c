@@ -8710,8 +8710,19 @@ void mtk_crtc_ovl_connect_change(struct drm_crtc *crtc, unsigned int ovl_res,
 	 * ovl_path table), so ovl_comp_nr is legitimately 0.  Only bail out when
 	 * the path itself is empty, otherwise HRT configuration is skipped.
 	 */
-	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0 &&
-	    mtk_crtc->ddp_ctx[ddp_mode].ddp_comp_nr[DDP_FIRST_PATH] == 0) {
+	/* xaga: restore the vendor guard verbatim.  MT6895 has no ovl_path table
+	 * (its OVLs live in path[]), so ovl_comp_nr is legitimately 0 and
+	 * ovl_comp[] was allocated with devm_kmalloc_array(dev, 0, ...) =
+	 * ZERO_SIZE_PTR.  Proceeding with ovl_comp_nr == 0 is a landmine:
+	 *   ovl_comp[FIRST][ovl_comp_nr - 1]  -> index 0xFFFFFFFF (unsigned)
+	 *   for (i = 0; i < ovl_comp_nr - 1; ++i) / comp->id  -> ZERO_SIZE_PTR read
+	 *   ovl_comp[FIRST][ovl_comp_idx] = ...               -> zero-size write
+	 * It is currently unreachable because ovlsys_usage[] comes from the DT
+	 * property "crtc-ovl-usage" (absent on this board, so 0) and both callers
+	 * short-circuit on that first, but the guard must not depend on a DT
+	 * property staying absent.
+	 */
+	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0) {
 		DDPINFO("%s no valid ovl_comp\n", __func__);
 		return;
 	}
@@ -9654,6 +9665,17 @@ static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 				 "xaga: DSI 0x210=0x%08x 0x214=0x%08x 0x300=0x%08x 0xE4=0x%08x\n",
 				 readl(r + 0x210), readl(r + 0x214),
 				 readl(r + 0x300), readl(r + 0xE4));
+			/* ovlsys_usage==0 is what makes ovl_connect_change()/path_adjust()
+			 * no-op on this board, which is why the zero-length ovl_comp[]
+			 * landmine never fires.  Print it so a future DT change that makes
+			 * it non-zero is visible instead of silently corrupting memory.
+			 */
+			dev_info(crtc->dev->dev,
+				 "xaga: ovlsys_usage[0]=0x%x ovl_usage[0]=0x%x ovl_nr=%u ddp_nr=%u\n",
+				 priv ? priv->ovlsys_usage[0] : 0xdeadbeef,
+				 priv ? priv->ovl_usage[0] : 0xdeadbeef,
+				 mtk_crtc->ddp_ctx[DDP_MAJOR].ovl_comp_nr[0],
+				 mtk_crtc->ddp_ctx[DDP_MAJOR].ddp_comp_nr[0]);
 		} else {
 			dev_info(crtc->dev->dev,
 				 "xaga: cmdq timeout without a DSI output comp\n");
@@ -16081,8 +16103,8 @@ static void mtk_drm_crtc_path_adjust(struct mtk_drm_private *priv, struct drm_cr
 	unsigned int ovl_res, comp_id_nr, ovl_comp_idx, comp_id, *comp_id_list = NULL;
 	unsigned int occupied_ovl = 0;
 
-	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0 &&
-	    mtk_crtc->ddp_ctx[ddp_mode].ddp_comp_nr[DDP_FIRST_PATH] == 0)
+	/* xaga: same landmine as mtk_crtc_ovl_connect_change(), see there */
+	if (mtk_crtc->ddp_ctx[ddp_mode].ovl_comp_nr[DDP_FIRST_PATH] == 0)
 		return;
 
 	/*  find main display index and count occupied_ovl */
