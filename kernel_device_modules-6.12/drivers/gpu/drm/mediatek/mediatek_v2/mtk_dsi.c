@@ -4440,6 +4440,19 @@ static void hrt_issue_timer_callback(struct timer_list *timer)
 	}
 }
 
+/* xaga: evidence counters for the "cmdq waits for event 313 forever" case.
+ * If frame-done never fires, the DSI engine is not completing frames and no
+ * cmdsys event can ever satisfy the wait; if it fires but the packet still
+ * times out, the event wiring is wrong instead.  Dumped from the cmdq timeout
+ * path in mtk_drm_crtc.c.
+ */
+unsigned long xaga_dsi_frame_done_cnt;
+unsigned long xaga_dsi_irq_cnt;
+unsigned long xaga_dsi_underrun_cnt;
+EXPORT_SYMBOL(xaga_dsi_frame_done_cnt);
+EXPORT_SYMBOL(xaga_dsi_irq_cnt);
+EXPORT_SYMBOL(xaga_dsi_underrun_cnt);
+
 irqreturn_t mtk_dsi_irq_status(int irq, void *dev_id)
 {
 	struct mtk_dsi *dsi = dev_id;
@@ -4491,6 +4504,11 @@ irqreturn_t mtk_dsi_irq_status(int irq, void *dev_id)
 	}
 
 	status = readl(dsi->regs + DSI_INTSTA);
+	xaga_dsi_irq_cnt++;
+	if (status & FRAME_DONE_INT_FLAG)
+		xaga_dsi_frame_done_cnt++;
+	if (status & BUFFER_UNDERRUN_INT_FLAG)
+		xaga_dsi_underrun_cnt++;
 	if (!status) {
 		ret = IRQ_NONE;
 		goto out;

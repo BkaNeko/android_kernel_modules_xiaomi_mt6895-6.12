@@ -9566,6 +9566,10 @@ static int mtk_crtc_mbrain_notify(void *data)
 	return 0;
 }
 
+extern unsigned long xaga_dsi_frame_done_cnt;
+extern unsigned long xaga_dsi_irq_cnt;
+extern unsigned long xaga_dsi_underrun_cnt;
+
 static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 {
 	struct drm_crtc *crtc = data.data;
@@ -9587,11 +9591,56 @@ static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 	}
 
 	dev_info(crtc->dev->dev,
-		 "xaga: cmdq timeout state enabled=%d mutex0=%d ovl_nr0=%d ovl_nr_path=%d\n",
+		 "xaga: cmdq timeout state enabled=%d mutex0=%d ovl_nr0=%d ovl_nr_path=%d ddp_nr0=%d ddp_nr1=%d\n",
 			 mtk_crtc->enabled,
 			 mtk_crtc->mutex[0] ? mtk_crtc->mutex[0]->claimed : -1,
 			 mtk_crtc->ddp_ctx[DDP_MAJOR].ovl_comp_nr[0],
-			 mtk_crtc->ddp_ctx[DDP_MAJOR].ovl_comp_nr[1]);
+			 mtk_crtc->ddp_ctx[DDP_MAJOR].ovl_comp_nr[1],
+			 mtk_crtc->ddp_ctx[DDP_MAJOR].ddp_comp_nr[0],
+			 mtk_crtc->ddp_ctx[DDP_MAJOR].ddp_comp_nr[1]);
+
+	/* xaga: the packet is stuck on "[Sync] wait for event 313" = DSI0
+	 * FRAME_DONE, so dump the DSI engine itself.  START tells whether video
+	 * mode is running at all; INTEN/INTSTA tell whether the frame-done
+	 * interrupt is enabled and pending; DBG6..9 carry the engine state.
+	 * The 5.10 driver reaches the same commit without timing out, so a
+	 * difference here is the thing to look at.
+	 */
+	{
+		struct mtk_ddp_comp *oc = mtk_ddp_comp_request_output(mtk_crtc);
+
+		if (oc && mtk_ddp_comp_get_type(oc->id) == MTK_DSI) {
+			struct mtk_dsi *d = container_of(oc, struct mtk_dsi, ddp_comp);
+			void __iomem *r = d->regs;
+
+			/* mtk_dsi.c keeps its register offsets private, so use the
+			 * documented literals: START 0x00, INTEN 0x08, INTSTA 0x0c,
+			 * and DBG6..9 at 0x160..0x16c on this SoC.
+			 */
+			dev_info(crtc->dev->dev,
+				 "xaga: DSI START=0x%08x INTEN=0x%08x INTSTA=0x%08x\n",
+				 readl(r + 0x00), readl(r + 0x08), readl(r + 0x0c));
+			dev_info(crtc->dev->dev,
+				 "xaga: DSI dbg6=0x%08x dbg7=0x%08x dbg8=0x%08x dbg9=0x%08x data_rate=%u output_en=%d\n",
+				 readl(r + 0x160), readl(r + 0x164),
+				 readl(r + 0x168), readl(r + 0x16c),
+				 d->data_rate, d->output_en);
+			dev_info(crtc->dev->dev,
+				 "xaga: DSI GCE_EVENT_CON0=0x%08x CON1=0x%08x\n",
+				 readl(r + 0x210), readl(r + 0x214));
+			/* If frame_done stays 0 the engine never completed a frame, so
+			 * the cmdsys event can never fire and the packet is doomed
+			 * regardless of the event wiring.
+			 */
+			dev_info(crtc->dev->dev,
+				 "xaga: DSI irq=%lu frame_done=%lu underrun=%lu\n",
+				 xaga_dsi_irq_cnt, xaga_dsi_frame_done_cnt,
+				 xaga_dsi_underrun_cnt);
+		} else {
+			dev_info(crtc->dev->dev,
+				 "xaga: cmdq timeout without a DSI output comp\n");
+		}
+	}
 
 	if (mtk_crtc->base.dev && mtk_crtc->base.dev->dev_private)
 		priv = mtk_crtc->base.dev->dev_private;
