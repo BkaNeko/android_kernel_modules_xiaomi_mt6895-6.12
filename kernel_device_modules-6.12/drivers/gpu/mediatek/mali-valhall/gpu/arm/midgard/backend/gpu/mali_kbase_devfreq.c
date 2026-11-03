@@ -252,6 +252,42 @@ static int kbase_devfreq_status(struct device *dev, struct devfreq_dev_status *s
 	struct kbase_device *kbdev = dev_get_drvdata(dev);
 	struct kbasep_pm_metrics diff;
 
+	/* xaga: this callback is reachable with kbdev == NULL and it panics the
+	 * kernel.  kbase_devfreq_init() calls devfreq_add_device(..., 
+	 * "simple_ondemand", NULL) with polling_ms = 100, so the monitor starts
+	 * polling immediately.  If a later step of kbase_device_init() then
+	 * fails, the probe error path does
+	 *
+	 *     dev_set_drvdata(kbdev->dev, NULL);
+	 *     kbase_device_free(kbdev);
+	 *
+	 * without unregistering the devfreq, so the next 100ms tick calls this
+	 * with drvdata cleared.  kbase_pm_get_dvfs_metrics() then does
+	 * spin_lock_irqsave(&kbdev->pm.backend.metrics.lock) on a NULL-derived
+	 * address and we get:
+	 *
+	 *     Unable to handle kernel NULL pointer dereference at 0x22c
+	 *     _raw_spin_lock_irqsave
+	 *     kbase_pm_get_dvfs_metrics -> kbase_devfreq_status
+	 *     devfreq_simple_ondemand_func -> devfreq_monitor
+	 *
+	 * which killed every one of the last three boots and buried the actual
+	 * probe failure.  Refuse to touch kbdev here instead; the probe error is
+	 * the thing that needs to be visible.
+	 */
+	if (unlikely(!kbdev)) {
+		static bool warned;
+
+		if (!warned) {
+			warned = true;
+			pr_err("xaga: devfreq monitor fired with NULL kbdev - "
+			       "mali probe failed and its devfreq was left registered; "
+			       "see the 'Device initialization failed' line above\n");
+		}
+		memset(stat, 0, sizeof(*stat));
+		return -ENODEV;
+	}
+
 	kbase_pm_get_dvfs_metrics(kbdev, &kbdev->last_devfreq_metrics, &diff);
 
 #if IS_ENABLED(CONFIG_MALI_MIDGARD_DVFS) && \
