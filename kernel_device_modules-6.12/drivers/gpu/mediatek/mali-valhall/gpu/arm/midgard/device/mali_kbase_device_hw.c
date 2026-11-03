@@ -50,6 +50,23 @@
  *
  * Return: 0 on success, error code otherwise.
  */
+/* xaga: the stall dump below runs with hwaccess_lock held and local IRQs
+ * disabled, and costs ~21 MMIO reads (5x32-bit + 8x64-bit), so it perturbs the
+ * very timing it observes.  Keep it for diagnosis but bound it: a few full
+ * dumps per boot, then one line saying it stopped.  xaga_stall_dump=0 disables
+ * it entirely (also settable at runtime via sysfs).
+ */
+static bool xaga_stall_dump = true;
+module_param(xaga_stall_dump, bool, 0644);
+MODULE_PARM_DESC(xaga_stall_dump,
+		 "Dump GPU/power registers when the cache clean stalls (default on)");
+#define XAGA_STALL_DUMP_MAX 3
+/* xaga: counted per stall cause so a later stall of a different type is not
+ * hidden behind an earlier exhausting the budget.  0 = CLEAN_CACHES_COMPLETED,
+ * 1 = everything else (FLUSH_PA_RANGE_COMPLETED ...).
+ */
+static int xaga_stall_dump_count[2];
+
 static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 {
 	const ktime_t wait_loop_start = ktime_get_raw();
@@ -101,6 +118,13 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 
 	if (!completed) {
 		char *irq_flag_name;
+		int stall_idx;
+
+		/* xaga: this runs with hwaccess_lock held and local IRQs off;
+		 * kbase_reg_read32/64 themselves take no lock (plain MMIO), so the
+		 * dump cannot self-deadlock - assert the contract instead.
+		 */
+		lockdep_assert_held(&kbdev->hwaccess_lock);
 
 		switch (irq_bit) {
 		case CLEAN_CACHES_COMPLETED:
@@ -133,6 +157,53 @@ static int busy_wait_cache_operation(struct kbase_device *kbdev, u32 irq_bit)
 		if (kbdev->exception_mask & (1u << EXCEPTION_BIT_STUCK))
 			BUG_ON(1);
 #endif /* CONFIG_MALI_MTK_TRIGGER_KE */
+
+		/* xaga: the CSF firmware spins in the very same loop (it polls
+		 * GPU_IRQ_RAWSTAT bit17 CLEAN_CACHES_COMPLETED at MCU 0x40003020),
+		 * so the hardware really never completes the flush.  Dump what
+		 * the host sees, to tell "command never accepted" (GPU_STATUS /
+		 * power state sane but RAWSTAT empty) from "GPU not powered or in
+		 * reset" (PWR_STATUS / PWR_IRQ_RAWSTAT odd).
+		 */
+		stall_idx = (irq_bit == CLEAN_CACHES_COMPLETED) ? 0 : 1;
+		if (xaga_stall_dump && xaga_stall_dump_count[stall_idx] < XAGA_STALL_DUMP_MAX) {
+			xaga_stall_dump_count[stall_idx]++;
+		dev_err(kbdev->dev,
+			"xaga: cache-clean stuck RAWSTAT=0x%08x MASK=0x%08x STAT=0x%08x GPU_STATUS=0x%08x in_progress=%d host_pwr_iface=%d\n",
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_RAWSTAT)),
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_MASK)),
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_IRQ_STATUS)),
+			kbase_reg_read32(kbdev, GPU_CONTROL_ENUM(GPU_STATUS)),
+			kbdev->cache_clean_in_progress, kbdev->pm.backend.has_host_pwr_iface);
+		/* Power domain READY/PWRTRANS tell "command rejected" apart from
+		 * "the domain the flush needs is not powered at all".  host_pwr_iface
+		 * is 0 on MT6895, so the PWR_STATUS dump above never runs.
+		 */
+		dev_err(kbdev->dev,
+			"xaga: domains READY shader=%llx tiler=%llx l2=%llx stack=%llx | PWRTRANS shader=%llx tiler=%llx l2=%llx stack=%llx\n",
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(SHADER_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(TILER_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(L2_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(STACK_READY)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(SHADER_PWRTRANS)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(TILER_PWRTRANS)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(L2_PWRTRANS)),
+			kbase_reg_read64(kbdev, GPU_CONTROL_ENUM(STACK_PWRTRANS)));
+
+		if (kbdev->pm.backend.has_host_pwr_iface)
+			dev_err(kbdev->dev,
+				"xaga: power PWR_IRQ_RAWSTAT=0x%08x PWR_IRQ_MASK=0x%08x PWR_IRQ_STATUS=0x%08x PWR_STATUS=0x%08x%08x\n",
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_RAWSTAT)),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_MASK)),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_IRQ_STATUS)),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS) + 4),
+				kbase_reg_read32(kbdev, HOST_POWER_ENUM(PWR_STATUS)));
+		} else if (xaga_stall_dump &&
+			   xaga_stall_dump_count[stall_idx] == XAGA_STALL_DUMP_MAX) {
+			xaga_stall_dump_count[stall_idx]++;
+			dev_err(kbdev->dev,
+				"xaga: further cache-clean stall dumps suppressed\n");
+		}
 
 		if (kbase_prepare_to_reset_gpu(kbdev, RESET_FLAGS_NONE)) {
 #if IS_ENABLED(CONFIG_MALI_MTK_MBRAIN_SUPPORT)

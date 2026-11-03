@@ -51,8 +51,11 @@ int kbase_backend_gpuprops_get(struct kbase_device *kbdev, struct kbasep_gpuprop
 #else
 #if IS_ENABLED(CONFIG_MTK_GPUFREQ_V2) && !IS_ENABLED(CONFIG_MTK_GPU_LEGACY)
 	shader_present = gpufreq_get_shader_present();
-	if (shader_present &&
-		((regdump->shader_present | shader_present) == regdump->shader_present)) {
+	if (!shader_present) {
+		/* xaga: the 6.12 gpufreq stack does not publish a shader mask
+		 * for this platform (shader_present stays 0). Trust the HW
+		 * register instead of BUG()ing during early init. */
+	} else if ((regdump->shader_present | shader_present) == regdump->shader_present) {
 		regdump->shader_present &= shader_present;
 	} else {
 		pr_info("%s,illegal shader present , HW: 0x%llx, SW: 0x%x\n",
@@ -131,8 +134,9 @@ int kbase_backend_gpuprops_get_curr_config(struct kbase_device *kbdev,
 #else
 #if IS_ENABLED(CONFIG_MTK_GPUFREQ_V2) && !IS_ENABLED(CONFIG_MTK_GPU_LEGACY)
 	shader_present = gpufreq_get_shader_present();
-	if (shader_present &&
-		((curr_config_regdump->shader_present | shader_present) == curr_config_regdump->shader_present)) {
+	if (!shader_present) {
+		/* xaga: no shader mask from the 6.12 gpufreq stack; trust HW */
+	} else if ((curr_config_regdump->shader_present | shader_present) == curr_config_regdump->shader_present) {
 		curr_config_regdump->shader_present &= shader_present;
 	} else {
 		pr_info("%s,illegal shader present , HW: 0x%llx, SW: 0x%x\n",

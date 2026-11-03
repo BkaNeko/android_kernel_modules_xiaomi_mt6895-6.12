@@ -487,6 +487,17 @@ static int kbase_api_kinstr_prfcnt_setup(struct kbase_file *kfile,
 	return kbase_kinstr_prfcnt_setup(kfile->kbdev->kinstr_prfcnt_ctx, prfcnt_setup);
 }
 
+/* xaga: the DTS says system-coherency = <0> (COHERENCY_ACE_LITE) and Run 86
+ * set that specifically to fix GPU_SHAREABILITY_FAULT.  Forcing NONE here
+ * overrode it again and the faults came back in the thousands
+ * (GPU Fault 0xeffe0088 GPU_SHAREABILITY_FAULT, including AS0/MCU accesses),
+ * so default to honouring the DTS.
+ */
+static bool mali_force_coh_none;
+module_param(mali_force_coh_none, bool, 0644);
+MODULE_PARM_DESC(mali_force_coh_none,
+		 "Force system coherency NONE (31) for MT6895 (default: true)");
+
 static struct kbase_device *to_kbase_device(struct device *dev)
 {
 	return dev_get_drvdata(dev);
@@ -4856,6 +4867,11 @@ int kbase_device_coherency_init(struct kbase_device *kbdev)
 		dev_info(kbdev->dev, "Using coherency mode %u set from dtb", override_coherency);
 	}
 early_exit:
+	if (mali_force_coh_none) {
+		kbdev->system_coherency = COHERENCY_NONE;
+		dev_info(kbdev->dev,
+			 "xaga: forcing system_coherency=NONE (31)\n");
+	}
 	kbdev->gpu_props.coherency_mode = kbdev->system_coherency;
 
 	return err;

@@ -596,6 +596,11 @@ static struct page *kbase_mem_pool_remove(struct kbase_mem_pool *pool,
 	return p;
 }
 
+bool mali_force_dma32 = true;
+module_param(mali_force_dma32, bool, 0644);
+MODULE_PARM_DESC(mali_force_dma32,
+		 "Force GPU memory allocations from ZONE_DMA32 (< 4GB)");
+
 struct page *kbase_mem_alloc_page(struct kbase_mem_pool *pool)
 {
 	struct page *p;
@@ -610,6 +615,12 @@ struct page *kbase_mem_alloc_page(struct kbase_mem_pool *pool)
 		gfp |= GFP_HIGHUSER | __GFP_NOWARN;
 	else
 		gfp |= kbase_is_page_migration_enabled() ? GFP_HIGHUSER_MOVABLE : GFP_HIGHUSER;
+
+	/* xaga: keep every GPU page (firmware, page tables, user buffers)
+	 * below 4GB; the r54 MCU MMU misbehaves on higher physical addresses.
+	 */
+	if (mali_force_dma32)
+		gfp |= __GFP_DMA32;
 
 	p = kbdev->mgm_dev->ops.mgm_alloc_page(kbdev->mgm_dev, pool->group_id, gfp, pool->order);
 	if (!p)
