@@ -3446,8 +3446,15 @@
 			 * send_msg.u.shared_mem.size, so the EB was told 4096
 			 * as well.  OPPO's 6.12 mt6895.dts uses 0x4000.
 			 */
+			/* xaga: 0x1000 is what the WORKING device reports.
+			 * Read from the live DT of the booting 5.10 kernel:
+			 *   gpueb_mem_table = <0 0x1000>, <1 0x180000>
+			 * The GPUEB firmware on this device is paired with that
+			 * layout, so the region size must not be changed from the
+			 * host side even though the 6.12 gpufreq struct is larger.
+			 */
 			gpueb_mem_table =
-				<0 0x4000>,   /* 16KB - fits 10456 */
+				<0 0x1000>,   /* 4KB - stock value */
 				<1 0x180000>; /* 1.5MB */
 
 			gpueb_mem_name_table =
@@ -3455,7 +3462,7 @@
 				"MEM_ID_LOG";     /* LOGGER */
 
 			gpueb-mem-table =
-				<0 0x4000>,   /* 16KB - fits 10456 */
+				<0 0x1000>,   /* 4KB - stock value */
 				<1 0x180000>; /* 1.5MB */
 
 			gpueb-mem-name-table =
@@ -10183,32 +10190,25 @@
 		 * instead of only surfacing to userspace as SW_FAULT_2 (0x72).
 		 */
 		reset-exception-mask = <0x03ffffff>;
-		/* xaga: match the shipping MT6895 6.12 DT (13T): GPU power is
-		 * owned by gpufreq/GPUEB, kbase must not attach to scpsys MFG1.
+		/* xaga: NO clocks/clock-names here - stock parity.
+		 * The live DT of the booting 5.10 kernel (which runs the same
+		 * r54p1-11eac0 DDK) lists exactly these properties on
+		 * /proc/device-tree/mali@13000000:
+		 *   #cooling-cells compatible ged-supply interrupt-names
+		 *   interrupts name operating-points-v2 phandle
+		 *   protected-memory-allocator reg
+		 * i.e. no clocks at all: the GPU clocks are owned by
+		 * gpufreq/GPUEB and must not be enabled by kbase.  Declaring
+		 * them made kbase drive the same clock tree as the EB.
 		 */
-		clocks =
-			<&topckgen_clk CLK_TOP_MFG_SEL_0_SEL>,
-			<&topckgen_clk CLK_TOP_MFG_SEL_1_SEL>,
-			<&mfg_top_config_clk CLK_MFGCFG_BG3D>,
-			<&mfgpll_pll_ctrl_clk CLK_MFG_AO_MFGPLL>,
-			<&mfgscpll_pll_ctrl_clk CLK_MFGSC_AO_MFGSCPLL>,
-			<&topckgen_clk CLK_TOP_MFGPLL>,
-			<&topckgen_clk CLK_TOP_MFGSCPLL>,
-			<&topckgen_clk CLK_TOP_MFG_REF>,
-			<&topckgen_clk CLK_TOP_MFGSC_REF>;
-		clock-names =
-			"mfg_sel_0",
-			"mfg_sel_1",
-			"mfgcfg_bg3d",
-			"mfg_ao_mfgpll",
-			"mfgsc_ao_mfgscpll",
-			"mfgpll_ck",
-			"mfgscpll_ck",
-			"mfg_ref_ck",
-			"mfgsc_ref_ck";
-		_vstack-supply = <&mt6368_vbuck2>;
-		_vcore-supply = <&mt6363_vbuck2>;
-		_vsram-supply = <&mt6363_vbuck4>;
+		/* xaga: no _vcore/_vsram/_vstack supplies - stock parity.
+		 * The live DT of the working 5.10 kernel declares none, because
+		 * these BUCK rails belong to gpufreq/GPUEB.  With the supplies
+		 * present our platform callback called regulator_enable(vcore)
+		 * and regulator_set_voltage(vsram, 750000, 800000) on rails the
+		 * EB was already driving - exactly the kind of double-drive that
+		 * shows up as "unstable GPU clk/pwr".
+		 */
 		/* xaga: no system-coherency property - stock parity.
 		 * Xiaomi's 5.10 mt6895.dts and OPPO's 6.12 mt6895.dts both omit
 		 * it, so the driver default COHERENCY_NONE (31) applies.  The
@@ -10216,7 +10216,10 @@
 		 * (Run 86), and forcing ACE_LITE deviates from what both stock
 		 * trees do on this SoC.
 		 */
-		firmware-idle-hysteresis-time-us = <5000>;
+		/* xaga: stock has no firmware-idle-hysteresis-time-us; the
+		 * driver default of 10 ms applies (live DT on the working
+		 * device lists no such property).
+		 */
 		operating-points-v2 = <&gpu_mali_opp>;
 		#cooling-cells = <2>;
 		ged-supply = <&ged>;
