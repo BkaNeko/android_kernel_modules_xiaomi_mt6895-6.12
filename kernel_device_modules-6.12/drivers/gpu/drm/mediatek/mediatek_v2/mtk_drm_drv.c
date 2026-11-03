@@ -11667,8 +11667,25 @@ static int xaga_drm_publish_boot_mode(struct drm_device *drm)
 	struct drm_connector_state *conn_state;
 	int ret;
 
-	if (!crtc)
+	if (!crtc) {
+		dev_info(drm->dev, "xaga: publish boot mode skipped: no crtc0\n");
 		return 0;
+	}
+
+	/* xaga: this is the step the cannon (mt6853) port calls out as the
+	 * precondition for a lit panel: 6.12 has no fbdev, so LK's first_enable
+	 * leaves the hardware running while the core CRTC has no mode blob, and
+	 * the vendor HWC's first blankDisplay then sets ACTIVE without MODE_ID
+	 * ("active without enabled" -> atomic core check failed).  Everything
+	 * below is silent at DDPINFO level, so a failing boot looks identical to
+	 * a skipped one.  Print the inputs and the outcome unconditionally.
+	 */
+	dev_info(drm->dev,
+		 "xaga: publish boot mode enter: mtk_crtc enabled=%d crtc->enable=%d active=%d mode=%s\n",
+		 to_mtk_crtc(crtc)->enabled,
+		 crtc->state ? crtc->state->enable : -1,
+		 crtc->state ? crtc->state->active : -1,
+		 crtc->state ? crtc->state->adjusted_mode.name : "none");
 
 	drm_connector_list_iter_begin(drm, &iter);
 	drm_for_each_connector_iter(connector, &iter) {
@@ -11685,8 +11702,10 @@ static int xaga_drm_publish_boot_mode(struct drm_device *drm)
 			break;
 	}
 	drm_connector_list_iter_end(&iter);
-	if (!panel)
+	if (!panel) {
+		dev_info(drm->dev, "xaga: publish boot mode: no DSI connector for crtc0\n");
 		return -ENODEV;
+	}
 
 	mutex_lock(&drm->mode_config.mutex);
 	ret = panel->funcs->fill_modes(panel, drm->mode_config.max_width,
@@ -11739,7 +11758,11 @@ retry:
 		drm_modeset_backoff(&ctx);
 		goto retry;
 	}
-	DDPINFO("xaga: publish boot mode '%s' ret=%d\n", boot_mode.name, ret);
+	dev_info(drm->dev,
+		 "xaga: publish boot mode '%s' %dx%d ret=%d crtc->enable=%d active=%d\n",
+		 boot_mode.name, boot_mode.hdisplay, boot_mode.vdisplay, ret,
+		 crtc->state ? crtc->state->enable : -1,
+		 crtc->state ? crtc->state->active : -1);
 out:
 	drm_atomic_state_put(state);
 	drm_modeset_drop_locks(&ctx);

@@ -19444,9 +19444,30 @@ static void mtk_drm_check_plane_for_se(struct drm_crtc *crtc)
 }
 #endif
 
+/* xaga: count real atomic commits from the composer side.  The display stack
+ * can look healthy (DSI streaming, ovl configured) while the vendor HWC never
+ * submits a frame, which shows up only as ovl_nr0 == 0 at cmdq timeout.  These
+ * two counters and the rate-limited first-N logs make "HWC never committed"
+ * distinguishable from "HWC committed and the kernel dropped it".
+ */
+static unsigned long xaga_atomic_begin_cnt;
+static unsigned long xaga_atomic_flush_cnt;
+
 static void mtk_drm_crtc_atomic_begin(struct drm_crtc *crtc,
 				      struct drm_atomic_state *atomic_state)
 {
+
+	xaga_atomic_begin_cnt++;
+	if (xaga_atomic_begin_cnt <= 12 || (xaga_atomic_begin_cnt % 300) == 0) {
+		struct mtk_drm_crtc *mc = to_mtk_crtc(crtc);
+
+		dev_info(crtc->dev->dev,
+			 "xaga: atomic_begin #%lu crtc%d enable=%d active=%d layers=%u\n",
+			 xaga_atomic_begin_cnt, drm_crtc_index(crtc),
+			 crtc->state ? crtc->state->enable : -1,
+			 crtc->state ? crtc->state->active : -1,
+			 mc ? mc->layer_nr : 0);
+	}
 	struct mtk_crtc_state *mtk_crtc_state = to_mtk_crtc_state(crtc->state);
 	struct mtk_drm_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	struct drm_crtc_state *old_crtc_state =
@@ -22536,6 +22557,12 @@ void mtk_drm_crtc_backup_ovl_status(struct drm_crtc *crtc, struct cmdq_pkt *cmdq
 static void mtk_drm_crtc_atomic_flush(struct drm_crtc *crtc,
 				      struct drm_atomic_state *atomic_state)
 {
+
+	xaga_atomic_flush_cnt++;
+	if (xaga_atomic_flush_cnt <= 12 || (xaga_atomic_flush_cnt % 300) == 0)
+		dev_info(crtc->dev->dev,
+			 "xaga: atomic_flush #%lu crtc%d\n",
+			 xaga_atomic_flush_cnt, drm_crtc_index(crtc));
 	struct mtk_drm_crtc *mtk_crtc = to_mtk_crtc(crtc);
 	struct mtk_drm_private *priv = crtc->dev->dev_private;
 	unsigned int index = drm_crtc_index(crtc);
