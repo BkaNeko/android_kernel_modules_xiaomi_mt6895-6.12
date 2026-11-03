@@ -23,6 +23,8 @@
 #include <mtk_gpufreq.h>
 #include <gpufreq_v2.h>
 #include <mtk_gpu_utility.h>
+#include <linux/kmod.h>
+#include <linux/workqueue.h>
 #if IS_ENABLED(CONFIG_MTK_AEE_IPANIC)
 #include <mboot_params.h>
 #endif
@@ -638,6 +640,37 @@ static inline void gpu_dvfs_status_reset_footprint(void)
 #endif
 }
 
+/* xaga: capture dmesg into /data so a black screen still leaves evidence.
+ *
+ * The whole bring-up loop depended on adb, which may not come up when the
+ * display never gets pixels.  /data is shared across kernels, so a log written
+ * here can be read after booting the working 5.10 image again
+ * (/data/local/tmp/xaga_6.12_last.log).  It runs from a workqueue because
+ * call_usermodehelper() must not be used from the locked/atomic paths where the
+ * interesting failures happen.
+ */
+static bool xaga_log_saver_started;
+static void xaga_log_saver_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(xaga_log_saver, xaga_log_saver_fn);
+static bool xaga_log_save_enable = true;
+module_param(xaga_log_save_enable, bool, 0644);
+MODULE_PARM_DESC(xaga_log_save_enable,
+		 "Periodically copy dmesg to /data/local/tmp (default on)");
+
+static void xaga_log_saver_fn(struct work_struct *work)
+{
+	char *argv[] = { "/system/bin/sh", "-c",
+		"dmesg > /data/local/tmp/xaga_6.12_last.log 2>/dev/null",
+		NULL };
+	char *envp[] = { "HOME=/", "PATH=/sbin:/system/bin:/system/xbin", NULL };
+
+	if (!xaga_log_save_enable)
+		return;
+
+	call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
+	schedule_delayed_work(&xaga_log_saver, msecs_to_jiffies(15000));
+}
+
 static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 {
 	if (mtk_common_pm_is_mfg_active())
@@ -816,6 +849,12 @@ static int pm_callback_power_on_nolock(struct kbase_device *kbdev)
 
 	dev_info(kbdev->dev, "xaga: power-on reporting GPU state %d\n",
 		 xaga_pwr_state);
+
+	/* start the periodic dmesg capture once, on the first power-on */
+	if (xaga_log_save_enable && !xaga_log_saver_started) {
+		xaga_log_saver_started = true;
+		schedule_delayed_work(&xaga_log_saver, msecs_to_jiffies(5000));
+	}
 
 	return xaga_pwr_state;
 }
