@@ -531,10 +531,17 @@ static void enable_mcu(struct kbase_device *kbdev)
 #define XAGA_GPU_IRQ_CLEAR	0x024
 #define XAGA_MCU_GPU_IRQ_CLEAR	0x3024
 
-static bool xaga_prepower = true;
+/* xaga: this was a bring-up hack from when the EB power path was dead.  It
+ * writes STACK/SHADER/TILER_PWRON directly, while kbase's own legacy PM path
+ * (has_host_pwr_iface == 0 on MT6895) drives the same registers - two writers
+ * left POWER_CHANGED_SINGLE|ALL latched in GPU_IRQ_RAWSTAT.  Now that
+ * gpufreq_power_control() reaches the EB it is no longer needed, so default it
+ * off.  Keep the parameter for A/B testing.
+ */
+static bool xaga_prepower;
 module_param(xaga_prepower, bool, 0644);
 MODULE_PARM_DESC(xaga_prepower,
-		 "Pre-power STACK/SHADER/TILER before MCU boot (default 1)");
+		 "Pre-power STACK/SHADER/TILER before MCU boot (default 0)");
 
 static void xaga_prepower_cores(struct kbase_device *kbdev)
 {
