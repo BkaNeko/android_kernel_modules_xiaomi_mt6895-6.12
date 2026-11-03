@@ -10199,7 +10199,14 @@
 		_vstack-supply = <&mt6368_vbuck2>;
 		_vcore-supply = <&mt6363_vbuck2>;
 		_vsram-supply = <&mt6363_vbuck4>;
-		system-coherency = <0>;
+		/* xaga: no system-coherency property - stock parity.
+		 * Xiaomi's 5.10 mt6895.dts and OPPO's 6.12 mt6895.dts both omit
+		 * it, so the driver default COHERENCY_NONE (31) applies.  The
+		 * "<0>" that used to be here came from fork commit 44328f02
+		 * (Run 86), and forcing ACE_LITE deviates from what both stock
+		 * trees do on this SoC.
+		 */
+		firmware-idle-hysteresis-time-us = <5000>;
 		operating-points-v2 = <&gpu_mali_opp>;
 		#cooling-cells = <2>;
 		ged-supply = <&ged>;
